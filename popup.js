@@ -8,10 +8,90 @@ document.addEventListener("DOMContentLoaded", () => {
   const debugOutput = document.getElementById("debugOutput");
   const status = document.getElementById("status");
 
+  const DATA_MARKERS = [
+    "message",
+    "author",
+    "recipient",
+    "conversation",
+    "mapping",
+    "parts",
+    "content",
+    "shared_conversation",
+    "initialState",
+    "__NEXT_DATA__",
+    "application/json"
+  ];
+
   function log(message) {
     console.log(message);
     debugOutput.value += `${message}\n`;
     debugOutput.scrollTop = debugOutput.scrollHeight;
+  }
+
+  function searchRawHtml(html, marker) {
+    const index = html.indexOf(marker);
+
+    if (index === -1) {
+      log(`Raw HTML marker \"${marker}\": NOT FOUND`);
+      return;
+    }
+
+    const start = Math.max(0, index - 120);
+    const end = Math.min(html.length, index + marker.length + 180);
+    const nearby = html.slice(start, end).replace(/\s+/g, " ");
+
+    log(`Raw HTML marker \"${marker}\": FOUND at index ${index}`);
+    log(`Raw HTML nearby (first hit, ~300 chars): ${nearby}`);
+  }
+
+  function scanScripts(doc) {
+    const scripts = Array.from(doc.querySelectorAll("script"));
+    log(`Total <script> tags: ${scripts.length}`);
+
+    const promisingScripts = [];
+
+    scripts.forEach((script, index) => {
+      const type = script.getAttribute("type") || "(none)";
+      const text = script.textContent || "";
+      const textLength = text.length;
+      const preview = text.slice(0, 200).replace(/\s+/g, " ");
+
+      log(`Script #${index}: type=${type}, textLength=${textLength}`);
+      log(`Script #${index} preview (first 200 chars): ${preview}`);
+
+      const foundMarkers = DATA_MARKERS.filter((marker) => {
+        if (marker === "application/json") {
+          return type.toLowerCase().includes("application/json");
+        }
+
+        return text.includes(marker);
+      });
+
+      if (foundMarkers.length > 0) {
+        log(`Script #${index} markers found: ${foundMarkers.join(", ")}`);
+        promisingScripts.push({
+          index,
+          type,
+          textLength,
+          preview500: text.slice(0, 500).replace(/\s+/g, " ")
+        });
+      } else {
+        log(`Script #${index} markers found: none`);
+      }
+    });
+
+    if (promisingScripts.length === 0) {
+      log("No promising scripts found by marker scan.");
+      return;
+    }
+
+    log(`Promising scripts count: ${promisingScripts.length}`);
+    promisingScripts.forEach((script) => {
+      log(
+        `Promising script #${script.index}: type=${script.type}, length=${script.textLength}`
+      );
+      log(`Promising script #${script.index} preview (first 500 chars): ${script.preview500}`);
+    });
   }
 
   log("Extension started");
@@ -42,10 +122,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const html = await response.text();
       log(`HTML length: ${html.length}`);
 
-      const htmlPreview = html.slice(0, 1000);
       log("HTML preview (first 1000 chars):");
-      debugOutput.value += `${htmlPreview}\n`;
-      debugOutput.scrollTop = debugOutput.scrollHeight;
+      log(html.slice(0, 1000));
 
       log("Parsing HTML with DOMParser...");
       const parser = new DOMParser();
@@ -56,33 +134,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const main = doc.querySelector("main");
       log(`Main exists: ${main ? "yes" : "no"}`);
 
-      if (main) {
-        const mainText = (main.innerText || "").trim();
-        log(`main.innerText length: ${mainText.length}`);
-        log(`main.innerText preview (first 500 chars): ${mainText.slice(0, 500)}`);
+      log("--- Script scan debug pass ---");
+      scanScripts(doc);
 
-        const divCount = main.querySelectorAll("div").length;
-        log(`Div count inside <main>: ${divCount}`);
-
-        const candidateBlocks = Array.from(main.querySelectorAll("div"))
-          .map((element, index) => {
-            const text = (element.innerText || "").trim();
-            return {
-              index,
-              length: text.length,
-              preview: text.slice(0, 120)
-            };
-          })
-          .filter((block) => block.length > 200)
-          .slice(0, 10);
-
-        log(`Candidate blocks found (text length > 200): ${candidateBlocks.length}`);
-        candidateBlocks.forEach((block, idx) => {
-          log(
-            `Candidate ${idx + 1}: divIndex=${block.index}, length=${block.length}, preview=${block.preview}`
-          );
-        });
-      }
+      log("--- Raw HTML marker search ---");
+      DATA_MARKERS.forEach((marker) => searchRawHtml(html, marker));
 
       status.textContent = `Status: Success (${response.status})`;
     } catch (error) {
