@@ -42,9 +42,47 @@ document.addEventListener("DOMContentLoaded", () => {
       const html = await response.text();
       log(`HTML length: ${html.length}`);
 
-      const preview = html.slice(0, 1000);
-      debugOutput.value += `${preview}\n`;
+      const htmlPreview = html.slice(0, 1000);
+      log("HTML preview (first 1000 chars):");
+      debugOutput.value += `${htmlPreview}\n`;
       debugOutput.scrollTop = debugOutput.scrollHeight;
+
+      log("Parsing HTML with DOMParser...");
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, "text/html");
+
+      log(`Document title: ${doc.title || "(empty)"}`);
+
+      const main = doc.querySelector("main");
+      log(`Main exists: ${main ? "yes" : "no"}`);
+
+      if (main) {
+        const mainText = (main.innerText || "").trim();
+        log(`main.innerText length: ${mainText.length}`);
+        log(`main.innerText preview (first 500 chars): ${mainText.slice(0, 500)}`);
+
+        const divCount = main.querySelectorAll("div").length;
+        log(`Div count inside <main>: ${divCount}`);
+
+        const candidateBlocks = Array.from(main.querySelectorAll("div"))
+          .map((element, index) => {
+            const text = (element.innerText || "").trim();
+            return {
+              index,
+              length: text.length,
+              preview: text.slice(0, 120)
+            };
+          })
+          .filter((block) => block.length > 200)
+          .slice(0, 10);
+
+        log(`Candidate blocks found (text length > 200): ${candidateBlocks.length}`);
+        candidateBlocks.forEach((block, idx) => {
+          log(
+            `Candidate ${idx + 1}: divIndex=${block.index}, length=${block.length}, preview=${block.preview}`
+          );
+        });
+      }
 
       status.textContent = `Status: Success (${response.status})`;
     } catch (error) {
