@@ -535,6 +535,74 @@ document.addEventListener("DOMContentLoaded", () => {
     return messages.filter((entry) => entry?.message?.author?.role !== "system");
   }
 
+
+  function isDescendantWrapper(wrapperId, possibleAncestorId, parentByWrapperId) {
+    if (typeof wrapperId !== "string" || typeof possibleAncestorId !== "string") {
+      return false;
+    }
+
+    let current = parentByWrapperId.get(wrapperId);
+    const guard = new Set();
+
+    while (typeof current === "string" && !guard.has(current)) {
+      if (current === possibleAncestorId) {
+        return true;
+      }
+      guard.add(current);
+      current = parentByWrapperId.get(current);
+    }
+
+    return false;
+  }
+
+  function selectTerminalVisibleMessages(orderedMessages) {
+    const parentByWrapperId = new Map();
+
+    orderedMessages.forEach((entry) => {
+      const wrapperId = entry?.wrapperNode?.id;
+      const parentId = entry?.wrapperNode?.parentId;
+      if (typeof wrapperId === "string") {
+        parentByWrapperId.set(wrapperId, typeof parentId === "string" ? parentId : null);
+      }
+    });
+
+    const selected = [];
+    const suppressed = [];
+
+    for (let i = 0; i < orderedMessages.length; i += 1) {
+      const current = orderedMessages[i];
+      const currentRole = current?.message?.author?.role;
+      const currentWrapperId = current?.wrapperNode?.id;
+
+      let suppressedAsIntermediate = false;
+
+      for (let j = i + 1; j < orderedMessages.length; j += 1) {
+        const candidate = orderedMessages[j];
+        const candidateRole = candidate?.message?.author?.role;
+        const candidateWrapperId = candidate?.wrapperNode?.id;
+
+        if (candidateRole !== currentRole) {
+          continue;
+        }
+
+        if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
+          suppressedAsIntermediate = true;
+          suppressed.push(current);
+          break;
+        }
+      }
+
+      if (!suppressedAsIntermediate) {
+        selected.push(current);
+      }
+    }
+
+    return {
+      selectedMessages: selected,
+      suppressedIntermediateMessages: suppressed
+    };
+  }
+
   function extractMessagesByPayloadShape(root, anchorIndex) {
     const scanResult = anchorIndex !== -1
       ? extractSingleResponseCandidates(root, anchorIndex)
@@ -544,7 +612,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const fullThreadOrder = scanResult.shape === "full-thread-node-map"
       ? orderFullThreadMessagesByGraph(dedupedMessages, scanResult.wrapperNodes || [])
       : { orderedMessages: dedupedMessages, orderedWrapperNodes: [] };
-    const exportedMessages = filterExportedNonSystemMessages(fullThreadOrder.orderedMessages);
+    const terminalSelection = scanResult.shape === "full-thread-node-map"
+      ? selectTerminalVisibleMessages(fullThreadOrder.orderedMessages)
+      : { selectedMessages: fullThreadOrder.orderedMessages, suppressedIntermediateMessages: [] };
+    const exportedMessages = filterExportedNonSystemMessages(terminalSelection.selectedMessages);
 
     return {
       shape: scanResult.shape,
@@ -552,7 +623,8 @@ document.addEventListener("DOMContentLoaded", () => {
       validMessageCount: scanResult.validMessages.length,
       dedupedMessages,
       exportedMessages,
-      orderedWrapperNodes: fullThreadOrder.orderedWrapperNodes
+      orderedWrapperNodes: fullThreadOrder.orderedWrapperNodes,
+      suppressedIntermediateMessages: terminalSelection.suppressedIntermediateMessages
     };
   }
 
@@ -636,6 +708,21 @@ document.addEventListener("DOMContentLoaded", () => {
     log(`raw candidates found: ${extraction.rawCandidateCount}`);
     log(`valid messages found: ${extraction.validMessageCount}`);
     log(`exported non-system messages: ${messages.length}`);
+
+    if (extraction.shape === "full-thread-node-map") {
+      extraction.suppressedIntermediateMessages.forEach((entry) => {
+        log(
+          `Suppressed: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${entry?.message?.author?.role || "(none)"}, reason=suppressed_intermediate_variant`
+        );
+      });
+
+      messages.slice(0, 10).forEach((entry, index) => {
+        const message = entry.message;
+        log(
+          `Visible ${index + 1}: role=${message?.author?.role}, message_id=${message.id}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, terminal_visible=true`
+        );
+      });
+    }
 
     if (extraction.shape === "full-thread-node-map") {
       extraction.orderedWrapperNodes.slice(0, 15).forEach((node, index) => {
