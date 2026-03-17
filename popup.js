@@ -8,7 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const debugOutput = document.getElementById("debugOutput");
   const status = document.getElementById("status");
 
-  const MAX_DEPTH = 28;
+  const MAX_DEPTH = 60;
   const MAX_MESSAGES_TO_LOG = 20;
 
   function log(message) {
@@ -19,6 +19,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  function normalizeSentinel(value) {
+    if (typeof value === "number" && value < 0) {
+      return null;
+    }
+    return value;
   }
 
   function getStreamEnqueueScripts(doc) {
@@ -78,27 +85,74 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function resolveIndex(index, root, depth = 0, seen = new Set()) {
+  function isLikelyRefObject(obj) {
+    if (!isPlainObject(obj)) {
+      return false;
+    }
+
+    const keys = Object.keys(obj);
+    if (keys.length === 0) {
+      return false;
+    }
+
+    return keys.every((key) => /^_\d+$/.test(key));
+  }
+
+  function resolveRefIndex(index, root, depth = 0, seen = new Set()) {
     if (!Number.isInteger(index) || index < 0 || index >= root.length) {
-      return index;
+      return normalizeSentinel(index);
     }
 
     if (depth > MAX_DEPTH) {
-      return `[max-depth-index:${index}]`;
+      return `[max-depth-ref:${index}]`;
     }
 
-    const token = `idx:${index}`;
+    const token = `ref:${index}`;
     if (seen.has(token)) {
-      return `[cycle-index:${index}]`;
+      return `[cycle-ref:${index}]`;
     }
 
     seen.add(token);
-    const resolved = resolveNode(root[index], root, depth + 1, seen);
+    const resolved = resolveValue(root[index], root, depth + 1, seen);
     seen.delete(token);
     return resolved;
   }
 
-  function resolveNode(node, root, depth = 0, seen = new Set()) {
+  function resolveKeyedRefObject(obj, root, depth, seen) {
+    const entries = Object.keys(obj)
+      .map((key) => ({
+        key,
+        keyIndex: Number.parseInt(key.slice(1), 10),
+        valueRef: obj[key]
+      }))
+      .sort((a, b) => a.keyIndex - b.keyIndex);
+
+    const output = {};
+
+    entries.forEach((entry) => {
+      const propertyNameCandidate = resolveRefIndex(entry.keyIndex, root, depth + 1, seen);
+      const propertyName = typeof propertyNameCandidate === "string" && propertyNameCandidate
+        ? propertyNameCandidate
+        : `_key_${entry.keyIndex}`;
+
+      let propertyValue;
+      if (typeof entry.valueRef === "number") {
+        if (entry.valueRef >= 0 && Number.isInteger(entry.valueRef)) {
+          propertyValue = resolveRefIndex(entry.valueRef, root, depth + 1, seen);
+        } else {
+          propertyValue = normalizeSentinel(entry.valueRef);
+        }
+      } else {
+        propertyValue = resolveValue(entry.valueRef, root, depth + 1, seen);
+      }
+
+      output[propertyName] = propertyValue;
+    });
+
+    return output;
+  }
+
+  function resolveValue(node, root, depth = 0, seen = new Set()) {
     if (depth > MAX_DEPTH) {
       return "[max-depth-node]";
     }
@@ -108,10 +162,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (typeof node === "number") {
-      if (Number.isInteger(node) && node >= 0 && node < root.length) {
-        return resolveIndex(node, root, depth + 1, seen);
-      }
-      return node;
+      return normalizeSentinel(node);
     }
 
     if (typeof node === "string" || typeof node === "boolean") {
@@ -119,24 +170,23 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (Array.isArray(node)) {
-      return node.map((item) => resolveNode(item, root, depth + 1, seen));
+      if (node.length === 1 && typeof node[0] === "number" && Number.isInteger(node[0]) && node[0] >= 0) {
+        return resolveRefIndex(node[0], root, depth + 1, seen);
+      }
+
+      return node.map((item) => resolveValue(item, root, depth + 1, seen));
+    }
+
+    if (isLikelyRefObject(node)) {
+      return resolveKeyedRefObject(node, root, depth + 1, seen);
     }
 
     if (isPlainObject(node)) {
-      const output = {};
-      Object.entries(node).forEach(([rawKey, rawValue]) => {
-        let key = rawKey;
-        const keyRefMatch = /^_(\d+)$/.exec(rawKey);
-        if (keyRefMatch) {
-          const keyIndex = Number.parseInt(keyRefMatch[1], 10);
-          const resolvedKey = resolveIndex(keyIndex, root, depth + 1, seen);
-          if (typeof resolvedKey === "string" && resolvedKey.length > 0) {
-            key = resolvedKey;
-          }
-        }
-        output[key] = resolveNode(rawValue, root, depth + 1, seen);
+      const resolved = {};
+      Object.entries(node).forEach(([key, value]) => {
+        resolved[key] = resolveValue(value, root, depth + 1, seen);
       });
-      return output;
+      return resolved;
     }
 
     return node;
@@ -144,33 +194,37 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function compactResolvedNode(node) {
     if (!isPlainObject(node)) {
-      return String(node);
+      try {
+        return JSON.stringify(node).slice(0, 240);
+      } catch {
+        return String(node);
+      }
     }
 
-    const entries = Object.entries(node).map(([key, value]) => {
-      let compactValue;
+    const parts = Object.entries(node).map(([key, value]) => {
+      let compact;
       if (typeof value === "string") {
-        compactValue = value.slice(0, 80).replace(/\s+/g, " ");
+        compact = value.slice(0, 80).replace(/\s+/g, " ");
       } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
-        compactValue = String(value);
+        compact = String(value);
       } else if (Array.isArray(value)) {
-        compactValue = `Array(len=${value.length})`;
+        compact = `Array(len=${value.length})`;
       } else if (isPlainObject(value)) {
-        compactValue = `Object(keys=${Object.keys(value).slice(0, 8).join(",")})`;
+        compact = `Object(keys=${Object.keys(value).slice(0, 10).join(",")})`;
       } else {
-        compactValue = typeof value;
+        compact = typeof value;
       }
-      return `${key}=${compactValue}`;
+      return `${key}=${compact}`;
     });
 
-    return entries.join(" | ");
+    return parts.join(" | ");
   }
 
-  function extractPartsPreview(node, length = 120) {
-    const parts = Array.isArray(node?.parts)
-      ? node.parts
-      : Array.isArray(node?.content?.parts)
-        ? node.content.parts
+  function extractPartsPreview(message, limit = 120) {
+    const parts = Array.isArray(message?.content?.parts)
+      ? message.content.parts
+      : Array.isArray(message?.parts)
+        ? message.parts
         : [];
 
     const joined = parts
@@ -179,7 +233,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/\s+/g, " ")
       .trim();
 
-    return joined.slice(0, length);
+    return joined.slice(0, limit);
   }
 
   function isResolvedMessage(node) {
@@ -187,23 +241,18 @@ document.addEventListener("DOMContentLoaded", () => {
       return false;
     }
 
-    const role = node.role || node?.author?.role || node?.author?.name;
-    const hasParts = Array.isArray(node?.parts) || Array.isArray(node?.content?.parts);
-    const hasCreateTime = node.create_time !== undefined && node.create_time !== null;
-    const hasRecipient = typeof node.recipient === "string";
+    const id = typeof node.id === "string" && node.id.length > 0;
+    const role = Boolean(node?.author?.role || node?.role);
+    const contentType = Boolean(node?.content?.content_type);
+    const parts = Array.isArray(node?.content?.parts) && node.content.parts.length > 0;
+    const createTime = typeof node.create_time === "number";
 
-    let score = 0;
-    if (role) score += 1;
-    if (hasParts) score += 1;
-    if (hasCreateTime) score += 1;
-    if (hasRecipient) score += 1;
-
-    return score >= 3;
+    return id && role && contentType && parts && createTime;
   }
 
   function sortMessages(messages) {
-    const copy = [...messages];
-    copy.sort((a, b) => {
+    const sorted = [...messages];
+    sorted.sort((a, b) => {
       const ta = typeof a.create_time === "number" ? a.create_time : Number.POSITIVE_INFINITY;
       const tb = typeof b.create_time === "number" ? b.create_time : Number.POSITIVE_INFINITY;
 
@@ -215,10 +264,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const ib = typeof b.id === "string" ? b.id : "";
       return ia.localeCompare(ib);
     });
-    return copy;
+    return sorted;
   }
 
-  function findMessageSection(root) {
+  function findMessageAnchorIndex(root) {
     for (let i = 0; i < root.length; i += 1) {
       if (root[i] === "messages") {
         return i;
@@ -227,60 +276,64 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
-  function collectMessageNodes(node, output, depth = 0, seenObjects = new WeakSet()) {
-    if (depth > 10 || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      node.forEach((item) => collectMessageNodes(item, output, depth + 1, seenObjects));
-      return;
-    }
-
-    if (!isPlainObject(node)) {
-      return;
-    }
-
-    if (seenObjects.has(node)) {
-      return;
-    }
-
-    seenObjects.add(node);
-
-    if (isResolvedMessage(node)) {
-      output.push(node);
-    }
-
-    Object.values(node).forEach((value) => collectMessageNodes(value, output, depth + 1, seenObjects));
-  }
-
   function findAllMessageCandidates(root) {
-    const candidates = [];
+    const found = [];
 
     for (let i = 0; i < root.length; i += 1) {
-      const resolved = resolveIndex(i, root, 0, new Set());
-      collectMessageNodes(resolved, candidates, 0, new WeakSet());
+      const resolved = resolveRefIndex(i, root, 0, new Set());
+
+      if (isResolvedMessage(resolved)) {
+        found.push(resolved);
+      }
+
+      if (Array.isArray(resolved)) {
+        resolved.forEach((item) => {
+          if (isResolvedMessage(item)) {
+            found.push(item);
+          }
+        });
+      }
+
+      if (isPlainObject(resolved)) {
+        Object.values(resolved).forEach((value) => {
+          if (isResolvedMessage(value)) {
+            found.push(value);
+          }
+          if (Array.isArray(value)) {
+            value.forEach((item) => {
+              if (isResolvedMessage(item)) {
+                found.push(item);
+              }
+            });
+          }
+        });
+      }
     }
 
     const deduped = [];
-    const seen = new Set();
+    const seenIds = new Set();
 
-    candidates.forEach((message) => {
-      const id = typeof message.id === "string" ? message.id : null;
-      const role = message.role || message?.author?.role || message?.author?.name || "";
-      const createTime = message.create_time ?? "";
-      const preview = extractPartsPreview(message, 60);
-      const key = id || `${role}|${createTime}|${preview}`;
-
-      if (seen.has(key)) {
-        return;
+    found.forEach((message) => {
+      if (!seenIds.has(message.id)) {
+        seenIds.add(message.id);
+        deduped.push(message);
       }
-
-      seen.add(key);
-      deduped.push(message);
     });
 
     return sortMessages(deduped);
+  }
+
+  function logRootDebug(root) {
+    [45, 58, 61].forEach((index) => {
+      if (index < 0 || index >= root.length) {
+        log(`root[${index}] raw: (out of range)`);
+        return;
+      }
+
+      log(`root[${index}] raw: ${compactResolvedNode(root[index])}`);
+      const resolved = resolveRefIndex(index, root, 0, new Set());
+      log(`root[${index}] resolved: ${compactResolvedNode(resolved)}`);
+    });
   }
 
   function inspectScriptSevenPayload(doc) {
@@ -295,7 +348,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     log(`script #7 found: yes (textLength=${scriptSeven.scriptText.length})`);
-    log(`script #7 preview (first 300 chars): ${scriptSeven.scriptText.slice(0, 300).replace(/\s+/g, " ")}`);
 
     const payload = extractEnqueuePayload(scriptSeven.scriptText);
     if (!payload) {
@@ -323,73 +375,38 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    log("script #7 root type: array");
+    log(`script #7 root type: array`);
     log(`script #7 root array length: ${root.length}`);
 
-    const messagesAnchorIndex = findMessageSection(root);
-    if (messagesAnchorIndex === -1) {
+    const anchor = findMessageAnchorIndex(root);
+    if (anchor === -1) {
       log('Found "messages": no');
     } else {
-      log(`Found "messages" at root index ${messagesAnchorIndex}`);
+      log(`Found "messages" at root index ${anchor}`);
       const start = Math.max(40, 0);
       const end = Math.min(70, root.length - 1);
 
       for (let i = start; i <= end; i += 1) {
         const value = root[i];
         const type = Array.isArray(value) ? "array" : typeof value;
-        const preview =
-          typeof value === "string"
-            ? value.slice(0, 80).replace(/\s+/g, " ")
-            : JSON.stringify(value).slice(0, 120);
+        const preview = compactResolvedNode(value);
         log(`root[${i}] type=${type} preview=${preview}`);
       }
     }
 
-    if (root.length > 45) {
-      const resolved45 = resolveIndex(45, root, 0, new Set());
-      if (isPlainObject(resolved45)) {
-        log(`Resolved root[45] keys: ${Object.keys(resolved45).join(", ")}`);
-        log(`Resolved root[45] compact: ${compactResolvedNode(resolved45)}`);
-
-        [
-          "parent_id",
-          "children",
-          "child_ids",
-          "message_id",
-          "next",
-          "prev",
-          "recipient",
-          "channel",
-          "token_count"
-        ].forEach((key) => {
-          const val = resolved45[key];
-          if (val === undefined) {
-            log(`Resolved root[45] ${key}: (missing)`);
-          } else if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
-            log(`Resolved root[45] ${key}: ${String(val)}`);
-          } else if (Array.isArray(val)) {
-            log(`Resolved root[45] ${key}: Array(len=${val.length})`);
-          } else if (isPlainObject(val)) {
-            log(`Resolved root[45] ${key}: Object(keys=${Object.keys(val).join(",")})`);
-          } else {
-            log(`Resolved root[45] ${key}: ${typeof val}`);
-          }
-        });
-      } else {
-        log(`Resolved root[45] type: ${Array.isArray(resolved45) ? "array" : typeof resolved45}`);
-      }
-    }
+    logRootDebug(root);
 
     const messages = findAllMessageCandidates(root);
     log(`Resolved message count: ${messages.length}`);
 
     messages.slice(0, MAX_MESSAGES_TO_LOG).forEach((message, index) => {
-      const id = typeof message.id === "string" ? message.id : "(no-id)";
-      const role = message.role || message?.author?.role || message?.author?.name || "(no-role)";
-      const createTime = message.create_time ?? "(no-create_time)";
+      const role = message?.author?.role || message?.role || "(no-role)";
+      const contentType = message?.content?.content_type || "(no-content_type)";
       const parts = extractPartsPreview(message, 120) || "(no-parts)";
 
-      log(`Message ${index + 1}: id=${id}, role=${role}, create_time=${createTime}, parts=${parts}`);
+      log(
+        `Message ${index + 1}: id=${message.id}, role=${role}, create_time=${message.create_time}, content_type=${contentType}, parts=${parts}`
+      );
     });
 
     if (messages.length > MAX_MESSAGES_TO_LOG) {
