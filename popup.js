@@ -573,8 +573,15 @@ document.addEventListener("DOMContentLoaded", () => {
       const current = orderedMessages[i];
       const currentRole = current?.message?.author?.role;
       const currentWrapperId = current?.wrapperNode?.id;
+      const isVisibleRole = currentRole === "user" || currentRole === "assistant";
+
+      if (!isVisibleRole) {
+        selected.push(current);
+        continue;
+      }
 
       let suppressedAsIntermediate = false;
+      let keptDescendantWrapperId = null;
 
       for (let j = i + 1; j < orderedMessages.length; j += 1) {
         const candidate = orderedMessages[j];
@@ -587,7 +594,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
           suppressedAsIntermediate = true;
-          suppressed.push(current);
+          keptDescendantWrapperId = candidateWrapperId;
+          suppressed.push({
+            entry: current,
+            keptDescendantWrapperId
+          });
           break;
         }
       }
@@ -710,16 +721,17 @@ document.addEventListener("DOMContentLoaded", () => {
     log(`exported non-system messages: ${messages.length}`);
 
     if (extraction.shape === "full-thread-node-map") {
-      extraction.suppressedIntermediateMessages.forEach((entry) => {
+      extraction.suppressedIntermediateMessages.forEach((item) => {
+        const entry = item.entry;
         log(
-          `Suppressed: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${entry?.message?.author?.role || "(none)"}, reason=suppressed_intermediate_variant`
+          `Suppressed: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${entry?.message?.author?.role || "(none)"}, nearest_kept_descendant_wrapper_node_id=${item.keptDescendantWrapperId || "(none)"}, reason=suppressed_intermediate_variant`
         );
       });
 
       messages.slice(0, 10).forEach((entry, index) => {
         const message = entry.message;
         log(
-          `Visible ${index + 1}: role=${message?.author?.role}, message_id=${message.id}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, terminal_visible=true`
+          `Visible ${index + 1}: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${message?.author?.role}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, terminal_visible=true`
         );
       });
     }
