@@ -9,7 +9,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const status = document.getElementById("status");
 
   const MAX_DEPTH = 60;
-  const MAX_MESSAGES_TO_LOG = 20;
 
   function log(message) {
     console.log(message);
@@ -118,12 +117,8 @@ document.addEventListener("DOMContentLoaded", () => {
     return resolved;
   }
 
-  function looksLikeReferenceArray(items) {
-    if (!Array.isArray(items) || items.length === 0) {
-      return false;
-    }
-
-    return items.every((item) => Number.isInteger(item));
+  function isIntegerReferenceArray(items) {
+    return Array.isArray(items) && items.every((item) => Number.isInteger(item));
   }
 
   function resolveKeyedRefObject(obj, root, depth, seen) {
@@ -178,8 +173,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (Array.isArray(node)) {
-      if (node.length === 1 && typeof node[0] === "number" && Number.isInteger(node[0]) && node[0] >= 0) {
-        return resolveRefIndex(node[0], root, depth + 1, seen);
+      if (isIntegerReferenceArray(node)) {
+        return node.map((item) => {
+          if (item >= 0) {
+            return resolveRefIndex(item, root, depth + 1, seen);
+          }
+          return normalizeSentinel(item);
+        });
       }
 
       if (looksLikeReferenceArray(node)) {
@@ -237,20 +237,40 @@ document.addEventListener("DOMContentLoaded", () => {
     return parts.join(" | ");
   }
 
-  function extractPartsPreview(message, limit = 120) {
-    const parts = Array.isArray(message?.content?.parts)
-      ? message.content.parts
-      : Array.isArray(message?.parts)
-        ? message.parts
-        : [];
+  function toPartsArray(partsValue) {
+    if (Array.isArray(partsValue)) {
+      return partsValue;
+    }
 
-    const joined = parts
-      .filter((part) => typeof part === "string")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    if (partsValue === null || partsValue === undefined) {
+      return [];
+    }
 
-    return joined.slice(0, limit);
+    return [partsValue];
+  }
+
+  function extractPartsPreview(parts, limit = 80) {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return "";
+    }
+
+    const firstPart = parts.find((part) => typeof part === "string");
+    if (typeof firstPart !== "string") {
+      return "";
+    }
+
+    return firstPart.replace(/\s+/g, " ").trim().slice(0, limit);
+  }
+
+  function normalizeMessageCandidate(node) {
+    const normalizedContent = isPlainObject(node.content)
+      ? { ...node.content, parts: toPartsArray(node.content.parts) }
+      : { parts: [] };
+
+    return {
+      ...node,
+      content: normalizedContent
+    };
   }
 
   function isResolvedMessage(node) {
@@ -258,27 +278,25 @@ document.addEventListener("DOMContentLoaded", () => {
       return false;
     }
 
-    const id = typeof node.id === "string" && node.id.length > 0;
-    const role = Boolean(node?.author?.role || node?.role);
-    const contentType = Boolean(node?.content?.content_type);
-    const parts = Array.isArray(node?.content?.parts) && node.content.parts.length > 0;
-    const createTime = typeof node.create_time === "number";
+    const hasAuthorRole = typeof node?.author?.role === "string" && node.author.role.length > 0;
+    const hasCreateTime = typeof node.create_time === "number";
+    const hasPartsField = node?.content && Object.prototype.hasOwnProperty.call(node.content, "parts");
 
-    return id && role && contentType && parts && createTime;
+    return hasAuthorRole && hasCreateTime && hasPartsField;
   }
 
   function sortMessages(messages) {
     const sorted = [...messages];
     sorted.sort((a, b) => {
-      const ta = typeof a.create_time === "number" ? a.create_time : Number.POSITIVE_INFINITY;
-      const tb = typeof b.create_time === "number" ? b.create_time : Number.POSITIVE_INFINITY;
+      const ta = typeof a.message.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b.message.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
 
       if (ta !== tb) {
         return ta - tb;
       }
 
-      const ia = typeof a.id === "string" ? a.id : "";
-      const ib = typeof b.id === "string" ? b.id : "";
+      const ia = typeof a.message.id === "string" ? a.message.id : "";
+      const ib = typeof b.message.id === "string" ? b.message.id : "";
       return ia.localeCompare(ib);
     });
     return sorted;
@@ -293,35 +311,34 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
+  function addMessageCandidate(found, rootIndex, candidate) {
+    if (!isResolvedMessage(candidate)) {
+      return;
+    }
+
+    found.push({
+      rootIndex,
+      message: normalizeMessageCandidate(candidate)
+    });
+  }
+
   function findAllMessageCandidates(root) {
     const found = [];
 
     for (let i = 0; i < root.length; i += 1) {
       const resolved = resolveRefIndex(i, root, 0, new Set());
 
-      if (isResolvedMessage(resolved)) {
-        found.push(resolved);
-      }
+      addMessageCandidate(found, i, resolved);
 
       if (Array.isArray(resolved)) {
-        resolved.forEach((item) => {
-          if (isResolvedMessage(item)) {
-            found.push(item);
-          }
-        });
+        resolved.forEach((item) => addMessageCandidate(found, i, item));
       }
 
       if (isPlainObject(resolved)) {
         Object.values(resolved).forEach((value) => {
-          if (isResolvedMessage(value)) {
-            found.push(value);
-          }
+          addMessageCandidate(found, i, value);
           if (Array.isArray(value)) {
-            value.forEach((item) => {
-              if (isResolvedMessage(item)) {
-                found.push(item);
-              }
-            });
+            value.forEach((item) => addMessageCandidate(found, i, item));
           }
         });
       }
@@ -330,10 +347,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const deduped = [];
     const seenIds = new Set();
 
-    found.forEach((message) => {
-      if (!seenIds.has(message.id)) {
-        seenIds.add(message.id);
-        deduped.push(message);
+    found.forEach((entry) => {
+      const messageId = typeof entry.message.id === "string" && entry.message.id.length > 0
+        ? entry.message.id
+        : `root-${entry.rootIndex}`;
+
+      if (!seenIds.has(messageId)) {
+        seenIds.add(messageId);
+        deduped.push(entry);
       }
     });
 
@@ -416,19 +437,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const messages = findAllMessageCandidates(root);
     log(`Resolved message count: ${messages.length}`);
 
-    messages.slice(0, MAX_MESSAGES_TO_LOG).forEach((message, index) => {
-      const role = message?.author?.role || message?.role || "(no-role)";
-      const contentType = message?.content?.content_type || "(no-content_type)";
-      const parts = extractPartsPreview(message, 120) || "(no-parts)";
+    messages.forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      const firstPartPreview = extractPartsPreview(parts, 80) || "(no-text-part)";
 
       log(
-        `Message ${index + 1}: id=${message.id}, role=${role}, create_time=${message.create_time}, content_type=${contentType}, parts=${parts}`
+        `Message ${index + 1}: root_index=${entry.rootIndex}, id=${message.id}, role=${message?.author?.role}, create_time=${message.create_time}, parts_is_array=${Array.isArray(parts)}, parts_len=${parts.length}, first_part=${firstPartPreview}`
       );
     });
 
-    if (messages.length > MAX_MESSAGES_TO_LOG) {
-      log(`...truncated ${messages.length - MAX_MESSAGES_TO_LOG} additional messages`);
-    }
+    log("Final message list:");
+    messages.forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      log(
+        `#${index + 1} id=${message.id} | role=${message?.author?.role} | create_time=${message.create_time} | parts=${JSON.stringify(parts)}`
+      );
+    });
   }
 
   log("Extension started");
