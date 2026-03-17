@@ -18,7 +18,8 @@ main {
 
 #urlInput,
 #convertButton,
-#outputPanel {
+#markdownOutput,
+#debugOutput {
   font: inherit;
 }
 
@@ -41,7 +42,8 @@ main {
   font-size: 13px;
 }
 
-#outputPanel {
+#markdownOutput,
+#debugOutput {
   width: 100%;
   height: 380px;
   resize: vertical;
