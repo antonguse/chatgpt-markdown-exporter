@@ -9,10 +9,23 @@
   <body>
     <main>
       <input id="urlInput" type="url" placeholder="https://chatgpt.com/s/xxxxx" />
-      <button id="loadButton" type="button">Load Page</button>
-      <div id="status">Status: Idle</div>
-      <textarea id="debugOutput" readonly></textarea>
+      <div class="controls">
+        <button id="convertButton" type="button">Convert</button>
+        <label><input id="debugToggle" type="checkbox" /> Debug</label>
+        <label>Mode
+          <select id="markdownMode">
+            <option value="compact" selected>compact</option>
+            <option value="chat">chat</option>
+          </select>
+        </label>
+      </div>
+      <div id="status">Status: idle</div>
+      <div class="outputControls">
+        <button id="copyButton" type="button">Copy</button>
+      </div>
+      <textarea id="markdownOutput" readonly></textarea>
+      <textarea id="debugOutput" readonly hidden></textarea>
     </main>
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>
