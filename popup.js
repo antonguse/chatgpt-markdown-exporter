@@ -381,7 +381,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    return sortMessages(deduped);
+    return {
+      totalCandidateCount: found.length,
+      dedupedMessages: sortMessages(deduped)
+    };
   }
 
   function filterExportedNonSystemMessages(messages) {
