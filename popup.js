@@ -555,13 +555,19 @@ document.addEventListener("DOMContentLoaded", () => {
     return false;
   }
 
-  function selectTerminalVisibleMessages(orderedMessages) {
+  function selectTerminalVisibleMessages(orderedMessages, orderedWrapperNodes = []) {
     const parentByWrapperId = new Map();
+
+    orderedWrapperNodes.forEach((node) => {
+      if (typeof node?.id === "string") {
+        parentByWrapperId.set(node.id, typeof node?.parentId === "string" ? node.parentId : null);
+      }
+    });
 
     orderedMessages.forEach((entry) => {
       const wrapperId = entry?.wrapperNode?.id;
       const parentId = entry?.wrapperNode?.parentId;
-      if (typeof wrapperId === "string") {
+      if (typeof wrapperId === "string" && !parentByWrapperId.has(wrapperId)) {
         parentByWrapperId.set(wrapperId, typeof parentId === "string" ? parentId : null);
       }
     });
@@ -580,7 +586,6 @@ document.addEventListener("DOMContentLoaded", () => {
         continue;
       }
 
-      let suppressedAsIntermediate = false;
       let keptDescendantWrapperId = null;
 
       for (let j = i + 1; j < orderedMessages.length; j += 1) {
@@ -593,19 +598,19 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
-          suppressedAsIntermediate = true;
           keptDescendantWrapperId = candidateWrapperId;
-          suppressed.push({
-            entry: current,
-            keptDescendantWrapperId
-          });
-          break;
         }
       }
 
-      if (!suppressedAsIntermediate) {
-        selected.push(current);
+      if (keptDescendantWrapperId) {
+        suppressed.push({
+          entry: current,
+          keptDescendantWrapperId
+        });
+        continue;
       }
+
+      selected.push(current);
     }
 
     return {
@@ -624,7 +629,7 @@ document.addEventListener("DOMContentLoaded", () => {
       ? orderFullThreadMessagesByGraph(dedupedMessages, scanResult.wrapperNodes || [])
       : { orderedMessages: dedupedMessages, orderedWrapperNodes: [] };
     const terminalSelection = scanResult.shape === "full-thread-node-map"
-      ? selectTerminalVisibleMessages(fullThreadOrder.orderedMessages)
+      ? selectTerminalVisibleMessages(fullThreadOrder.orderedMessages, fullThreadOrder.orderedWrapperNodes)
       : { selectedMessages: fullThreadOrder.orderedMessages, suppressedIntermediateMessages: [] };
     const exportedMessages = filterExportedNonSystemMessages(terminalSelection.selectedMessages);
 
