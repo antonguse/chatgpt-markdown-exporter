@@ -13,13 +13,14 @@
 7. Verify debug output appears in the popup textarea:
    - fetch status
    - HTML length
-   - script scan logs
-   - raw marker search logs
-   - `client-bootstrap` parse/walk logs
+   - React Router enqueue extraction logs for script `#7`
+   - decoded payload parse status
+   - resolved message candidate logs (id/role/create_time/content_type/parts)
 
 ### Quick expected signals
 
 - `Status: Success (200)` (or another HTTP status)
-- `client-bootstrap script found: yes`
-- `client-bootstrap JSON parse: success`
-- one or more `Node ... path=...` entries showing promising message-like nodes
+- `script #7 found: yes`
+- `script #7 decoded JSON parse: success`
+- `Resolved message count: ...`
+- one or more `Message ...` entries with role + parts preview
