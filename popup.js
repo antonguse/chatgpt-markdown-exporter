@@ -9,7 +9,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const status = document.getElementById("status");
 
   const MAX_DEPTH = 60;
-  const MAX_MESSAGES_TO_LOG = 20;
 
   function log(message) {
     console.log(message);
@@ -118,6 +117,10 @@ document.addEventListener("DOMContentLoaded", () => {
     return resolved;
   }
 
+  function looksLikeReferenceArray(items) {
+    return Array.isArray(items) && items.every((item) => Number.isInteger(item));
+  }
+
   function resolveKeyedRefObject(obj, root, depth, seen) {
     const entries = Object.keys(obj)
       .map((key) => ({
@@ -170,8 +173,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (Array.isArray(node)) {
-      if (node.length === 1 && typeof node[0] === "number" && Number.isInteger(node[0]) && node[0] >= 0) {
-        return resolveRefIndex(node[0], root, depth + 1, seen);
+      if (looksLikeReferenceArray(node)) {
+        return node.map((item) => {
+          if (item >= 0) {
+            return resolveRefIndex(item, root, depth + 1, seen);
+          }
+          return normalizeSentinel(item);
+        });
       }
 
       return node.map((item) => resolveValue(item, root, depth + 1, seen));
@@ -220,20 +228,40 @@ document.addEventListener("DOMContentLoaded", () => {
     return parts.join(" | ");
   }
 
-  function extractPartsPreview(message, limit = 120) {
-    const parts = Array.isArray(message?.content?.parts)
-      ? message.content.parts
-      : Array.isArray(message?.parts)
-        ? message.parts
-        : [];
+  function toPartsArray(partsValue) {
+    if (Array.isArray(partsValue)) {
+      return partsValue;
+    }
 
-    const joined = parts
-      .filter((part) => typeof part === "string")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    if (partsValue === null || partsValue === undefined) {
+      return [];
+    }
 
-    return joined.slice(0, limit);
+    return [partsValue];
+  }
+
+  function extractPartsPreview(parts, limit = 80) {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return "";
+    }
+
+    const firstPart = parts.find((part) => typeof part === "string");
+    if (typeof firstPart !== "string") {
+      return "";
+    }
+
+    return firstPart.replace(/\s+/g, " ").trim().slice(0, limit);
+  }
+
+  function normalizeMessageCandidate(node) {
+    const normalizedContent = isPlainObject(node.content)
+      ? { ...node.content, parts: toPartsArray(node.content.parts) }
+      : { parts: [] };
+
+    return {
+      ...node,
+      content: normalizedContent
+    };
   }
 
   function isResolvedMessage(node) {
@@ -241,27 +269,26 @@ document.addEventListener("DOMContentLoaded", () => {
       return false;
     }
 
-    const id = typeof node.id === "string" && node.id.length > 0;
-    const role = Boolean(node?.author?.role || node?.role);
-    const contentType = Boolean(node?.content?.content_type);
-    const parts = Array.isArray(node?.content?.parts) && node.content.parts.length > 0;
-    const createTime = typeof node.create_time === "number";
+    const hasId = typeof node.id === "string" && node.id.length > 0;
+    const hasAuthorRole = typeof node?.author?.role === "string" && node.author.role.length > 0;
+    const hasCreateTime = typeof node.create_time === "number";
+    const hasPartsField = node?.content && Object.prototype.hasOwnProperty.call(node.content, "parts");
 
-    return id && role && contentType && parts && createTime;
+    return hasId && hasAuthorRole && hasCreateTime && hasPartsField;
   }
 
   function sortMessages(messages) {
     const sorted = [...messages];
     sorted.sort((a, b) => {
-      const ta = typeof a.create_time === "number" ? a.create_time : Number.POSITIVE_INFINITY;
-      const tb = typeof b.create_time === "number" ? b.create_time : Number.POSITIVE_INFINITY;
+      const ta = typeof a.message.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b.message.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
 
       if (ta !== tb) {
         return ta - tb;
       }
 
-      const ia = typeof a.id === "string" ? a.id : "";
-      const ib = typeof b.id === "string" ? b.id : "";
+      const ia = typeof a.message.id === "string" ? a.message.id : "";
+      const ib = typeof b.message.id === "string" ? b.message.id : "";
       return ia.localeCompare(ib);
     });
     return sorted;
@@ -276,51 +303,106 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
-  function findAllMessageCandidates(root) {
-    const found = [];
+  function makeMessageEntry(rootIndex, message) {
+    return {
+      rootIndex,
+      message: normalizeMessageCandidate(message)
+    };
+  }
+
+  function extractSingleResponseCandidates(root, anchorIndex) {
+    const rawCandidates = [];
+
+    const nextIndex = anchorIndex + 1;
+    if (nextIndex < root.length) {
+      const resolvedNext = resolveRefIndex(nextIndex, root, 0, new Set());
+
+      if (Array.isArray(resolvedNext)) {
+        resolvedNext.forEach((item) => rawCandidates.push({ rootIndex: nextIndex, candidate: item }));
+      } else {
+        rawCandidates.push({ rootIndex: nextIndex, candidate: resolvedNext });
+      }
+    }
+
+    const validMessages = rawCandidates
+      .filter((entry) => isResolvedMessage(entry.candidate))
+      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
+
+    return {
+      shape: "single-response-direct-message",
+      rawCandidateCount: rawCandidates.length,
+      validMessages
+    };
+  }
+
+  function isConversationNode(node) {
+    if (!isPlainObject(node)) {
+      return false;
+    }
+
+    if (!isPlainObject(node.message)) {
+      return false;
+    }
+
+    return Object.prototype.hasOwnProperty.call(node, "parent") || Array.isArray(node.children);
+  }
+
+  function extractFullThreadCandidates(root) {
+    const rawCandidates = [];
 
     for (let i = 0; i < root.length; i += 1) {
       const resolved = resolveRefIndex(i, root, 0, new Set());
 
-      if (isResolvedMessage(resolved)) {
-        found.push(resolved);
-      }
-
-      if (Array.isArray(resolved)) {
-        resolved.forEach((item) => {
-          if (isResolvedMessage(item)) {
-            found.push(item);
-          }
-        });
-      }
-
-      if (isPlainObject(resolved)) {
-        Object.values(resolved).forEach((value) => {
-          if (isResolvedMessage(value)) {
-            found.push(value);
-          }
-          if (Array.isArray(value)) {
-            value.forEach((item) => {
-              if (isResolvedMessage(item)) {
-                found.push(item);
-              }
-            });
-          }
-        });
+      if (isConversationNode(resolved)) {
+        rawCandidates.push({ rootIndex: i, candidate: resolved.message });
       }
     }
 
+    const validMessages = rawCandidates
+      .filter((entry) => isResolvedMessage(entry.candidate))
+      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
+
+    return {
+      shape: "full-thread-node-map",
+      rawCandidateCount: rawCandidates.length,
+      validMessages
+    };
+  }
+
+  function dedupeAndSortMessages(messageEntries) {
     const deduped = [];
     const seenIds = new Set();
 
-    found.forEach((message) => {
-      if (!seenIds.has(message.id)) {
-        seenIds.add(message.id);
-        deduped.push(message);
+    messageEntries.forEach((entry) => {
+      const messageId = entry.message.id;
+      if (!seenIds.has(messageId)) {
+        seenIds.add(messageId);
+        deduped.push(entry);
       }
     });
 
     return sortMessages(deduped);
+  }
+
+  function filterExportedNonSystemMessages(messages) {
+    return messages.filter((entry) => entry?.message?.author?.role !== "system");
+  }
+
+  function extractMessagesByPayloadShape(root, anchorIndex) {
+    const scanResult = anchorIndex !== -1
+      ? extractSingleResponseCandidates(root, anchorIndex)
+      : extractFullThreadCandidates(root);
+
+    const dedupedMessages = dedupeAndSortMessages(scanResult.validMessages);
+    const exportedMessages = filterExportedNonSystemMessages(dedupedMessages);
+
+    return {
+      shape: scanResult.shape,
+      rawCandidateCount: scanResult.rawCandidateCount,
+      validMessageCount: scanResult.validMessages.length,
+      dedupedMessages,
+      exportedMessages
+    };
   }
 
   function logRootDebug(root) {
@@ -396,22 +478,32 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logRootDebug(root);
 
-    const messages = findAllMessageCandidates(root);
-    log(`Resolved message count: ${messages.length}`);
+    const extraction = extractMessagesByPayloadShape(root, anchor);
+    const messages = extraction.exportedMessages;
 
-    messages.slice(0, MAX_MESSAGES_TO_LOG).forEach((message, index) => {
-      const role = message?.author?.role || message?.role || "(no-role)";
-      const contentType = message?.content?.content_type || "(no-content_type)";
-      const parts = extractPartsPreview(message, 120) || "(no-parts)";
+    log(`payload shape classification: ${extraction.shape}`);
+    log(`raw candidates found: ${extraction.rawCandidateCount}`);
+    log(`valid messages found: ${extraction.validMessageCount}`);
+    log(`exported non-system messages: ${messages.length}`);
+
+    messages.slice(0, 15).forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      const firstPartPreview = extractPartsPreview(parts, 80) || "(no-text-part)";
 
       log(
-        `Message ${index + 1}: id=${message.id}, role=${role}, create_time=${message.create_time}, content_type=${contentType}, parts=${parts}`
+        `Message ${index + 1}: root_index=${entry.rootIndex}, id=${message.id}, role=${message?.author?.role}, create_time=${message.create_time}, parts_is_array=${Array.isArray(parts)}, parts_len=${parts.length}, first_part=${firstPartPreview}`
       );
     });
 
-    if (messages.length > MAX_MESSAGES_TO_LOG) {
-      log(`...truncated ${messages.length - MAX_MESSAGES_TO_LOG} additional messages`);
-    }
+    log("Final message list:");
+    messages.forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      log(
+        `#${index + 1} id=${message.id} | role=${message?.author?.role} | create_time=${message.create_time} | parts=${JSON.stringify(parts)}`
+      );
+    });
   }
 
   log("Extension started");
