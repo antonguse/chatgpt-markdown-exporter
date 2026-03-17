@@ -385,7 +385,31 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    return sortMessages(deduped);
+    return {
+      totalCandidateCount: found.length,
+      dedupedMessages: sortMessages(deduped)
+    };
+  }
+
+  function filterExportedNonSystemMessages(messages) {
+    return messages.filter((entry) => entry?.message?.author?.role !== "system");
+  }
+
+  function extractMessagesByPayloadShape(root, anchorIndex) {
+    const scanResult = anchorIndex !== -1
+      ? extractSingleResponseCandidates(root, anchorIndex)
+      : extractFullThreadCandidates(root);
+
+    const dedupedMessages = dedupeAndSortMessages(scanResult.validMessages);
+    const exportedMessages = filterExportedNonSystemMessages(dedupedMessages);
+
+    return {
+      shape: scanResult.shape,
+      rawCandidateCount: scanResult.rawCandidateCount,
+      validMessageCount: scanResult.validMessages.length,
+      dedupedMessages,
+      exportedMessages
+    };
   }
 
   function filterExportedNonSystemMessages(messages) {
