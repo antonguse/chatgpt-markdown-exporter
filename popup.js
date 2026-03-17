@@ -117,7 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return resolved;
   }
 
-  function isIntegerReferenceArray(items) {
+  function looksLikeReferenceArray(items) {
     return Array.isArray(items) && items.every((item) => Number.isInteger(item));
   }
 
@@ -173,18 +173,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (Array.isArray(node)) {
-      if (isIntegerReferenceArray(node)) {
-        return node.map((item) => {
-          if (item >= 0) {
-            return resolveRefIndex(item, root, depth + 1, seen);
-          }
-          return normalizeSentinel(item);
-        });
-      }
-
       if (looksLikeReferenceArray(node)) {
         return node.map((item) => {
-          if (typeof item === "number" && Number.isInteger(item) && item >= 0) {
+          if (item >= 0) {
             return resolveRefIndex(item, root, depth + 1, seen);
           }
           return normalizeSentinel(item);
@@ -358,7 +349,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    return sortMessages(deduped);
+    return {
+      totalCandidateCount: found.length,
+      dedupedMessages: sortMessages(deduped)
+    };
   }
 
   function logRootDebug(root) {
@@ -434,8 +428,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logRootDebug(root);
 
-    const messages = findAllMessageCandidates(root);
-    log(`Resolved message count: ${messages.length}`);
+    const scanResult = findAllMessageCandidates(root);
+    const messages = scanResult.dedupedMessages;
+    log(`Total candidate count: ${scanResult.totalCandidateCount}`);
+    log(`Total deduped message count: ${messages.length}`);
 
     messages.forEach((entry, index) => {
       const message = entry.message;
