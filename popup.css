@@ -18,6 +18,7 @@ main {
 
 #urlInput,
 #convertButton,
+#copyButton,
 #markdownOutput,
 #debugOutput {
   font: inherit;
@@ -52,4 +53,14 @@ main {
 
 #markdownMode {
   margin-left: 4px;
+}
+
+.outputControls {
+  display: flex;
+  justify-content: flex-end;
+}
+
+#copyButton {
+  padding: 6px 10px;
+  cursor: pointer;
 }

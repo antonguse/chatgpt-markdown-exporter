@@ -36,6 +36,7 @@ function makeFirstMessageBlockDebugLines(conversation) {
 export function initPopupApp() {
   const urlInput = document.getElementById('urlInput');
   const convertButton = document.getElementById('convertButton');
+  const copyButton = document.getElementById('copyButton');
   const debugToggle = document.getElementById('debugToggle');
   const markdownMode = document.getElementById('markdownMode');
   const markdownOutput = document.getElementById('markdownOutput');
@@ -51,6 +52,11 @@ export function initPopupApp() {
     markdownOutput.hidden = isDebug;
   };
 
+  const getVisibleOutputValue = () => {
+    const activePanel = debugOutput.hidden ? markdownOutput : debugOutput;
+    return activePanel.value || '';
+  };
+
   const host = createFirefoxPopupHost({
     writeDebug: () => {},
     setStatus
@@ -62,6 +68,22 @@ export function initPopupApp() {
 
   debugToggle.addEventListener('change', () => {
     setOutputMode(debugToggle.checked);
+  });
+
+  copyButton.addEventListener('click', async () => {
+    try {
+      const visibleText = getVisibleOutputValue();
+      if (!visibleText.trim()) {
+        setStatus('nothing to copy');
+        return;
+      }
+
+      await navigator.clipboard.writeText(visibleText);
+      setStatus('copied');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`error: ${message}`);
+    }
   });
 
   convertButton.addEventListener('click', async () => {
