@@ -182,6 +182,15 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       }
 
+      if (looksLikeReferenceArray(node)) {
+        return node.map((item) => {
+          if (typeof item === "number" && Number.isInteger(item) && item >= 0) {
+            return resolveRefIndex(item, root, depth + 1, seen);
+          }
+          return normalizeSentinel(item);
+        });
+      }
+
       return node.map((item) => resolveValue(item, root, depth + 1, seen));
     }
 
