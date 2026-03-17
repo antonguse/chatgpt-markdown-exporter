@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Shared Page Debugger",
+  "version": "0.2.2",
+  "description": "Debug MVP: fetch a ChatGPT shared page URL and show HTML/logs in popup.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ChatGPT Debug MVP"
+  },
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ]
+}
