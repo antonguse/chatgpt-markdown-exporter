@@ -797,12 +797,22 @@ document.addEventListener("DOMContentLoaded", () => {
         );
       });
 
-      extraction.keptVisibleDebug.slice(0, 10).forEach((item, index) => {
+      extraction.keptVisibleDebug.slice(0, 15).forEach((item, index) => {
         const node = item.wrapperNode;
         log(
-          `Kept ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, terminal_visible=${item.terminalVisible}`
+          `Visible-role with flags ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, terminal_visible=${item.terminalVisible}`
         );
       });
+
+      extraction.keptVisibleDebug
+        .filter((item) => item.terminalVisible)
+        .slice(0, 10)
+        .forEach((item, index) => {
+          const node = item.wrapperNode;
+          log(
+            `Terminal-visible kept ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, terminal_visible=true`
+          );
+        });
     }
 
     if (extraction.shape === "full-thread-node-map") {
