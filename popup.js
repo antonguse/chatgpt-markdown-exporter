@@ -328,9 +328,11 @@ document.addEventListener("DOMContentLoaded", () => {
       .filter((entry) => isResolvedMessage(entry.candidate))
       .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
 
+    const found = rawCandidates;
+
     return {
       shape: "single-response-direct-message",
-      rawCandidateCount: rawCandidates.length,
+      rawCandidateCount: found.length,
       validMessages
     };
   }
@@ -362,9 +364,11 @@ document.addEventListener("DOMContentLoaded", () => {
       .filter((entry) => isResolvedMessage(entry.candidate))
       .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
 
+    const found = rawCandidates;
+
     return {
       shape: "full-thread-node-map",
-      rawCandidateCount: rawCandidates.length,
+      rawCandidateCount: found.length,
       validMessages
     };
   }
@@ -384,6 +388,27 @@ document.addEventListener("DOMContentLoaded", () => {
     return {
       totalCandidateCount: found.length,
       dedupedMessages: sortMessages(deduped)
+    };
+  }
+
+  function filterExportedNonSystemMessages(messages) {
+    return messages.filter((entry) => entry?.message?.author?.role !== "system");
+  }
+
+  function extractMessagesByPayloadShape(root, anchorIndex) {
+    const scanResult = anchorIndex !== -1
+      ? extractSingleResponseCandidates(root, anchorIndex)
+      : extractFullThreadCandidates(root);
+
+    const dedupedMessages = dedupeAndSortMessages(scanResult.validMessages);
+    const exportedMessages = filterExportedNonSystemMessages(dedupedMessages);
+
+    return {
+      shape: scanResult.shape,
+      rawCandidateCount: scanResult.rawCandidateCount,
+      validMessageCount: scanResult.validMessages.length,
+      dedupedMessages,
+      exportedMessages
     };
   }
 
@@ -489,7 +514,7 @@ document.addEventListener("DOMContentLoaded", () => {
     log(`valid messages found: ${extraction.validMessageCount}`);
     log(`exported non-system messages: ${messages.length}`);
 
-    messages.slice(0, 15).forEach((entry, index) => {
+    messages.slice(0, 10).forEach((entry, index) => {
       const message = entry.message;
       const parts = toPartsArray(message?.content?.parts);
       const firstPartPreview = extractPartsPreview(parts, 80) || "(no-text-part)";
