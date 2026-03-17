@@ -572,50 +572,98 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    const selected = [];
-    const suppressed = [];
+    const visibleEntries = [];
+    let segmentIndex = -1;
+    let previousVisibleRole = null;
 
-    for (let i = 0; i < orderedMessages.length; i += 1) {
-      const current = orderedMessages[i];
-      const currentRole = current?.message?.author?.role;
-      const currentWrapperId = current?.wrapperNode?.id;
-      const isVisibleRole = currentRole === "user" || currentRole === "assistant";
-
+    orderedMessages.forEach((entry) => {
+      const role = entry?.message?.author?.role;
+      const isVisibleRole = role === "user" || role === "assistant";
       if (!isVisibleRole) {
-        selected.push(current);
-        continue;
+        return;
       }
 
-      let keptDescendantWrapperId = null;
-
-      for (let j = i + 1; j < orderedMessages.length; j += 1) {
-        const candidate = orderedMessages[j];
-        const candidateRole = candidate?.message?.author?.role;
-        const candidateWrapperId = candidate?.wrapperNode?.id;
-
-        if (candidateRole !== currentRole) {
-          continue;
-        }
-
-        if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
-          keptDescendantWrapperId = candidateWrapperId;
-        }
+      if (role !== previousVisibleRole) {
+        segmentIndex += 1;
+        previousVisibleRole = role;
       }
 
-      if (keptDescendantWrapperId) {
-        suppressed.push({
+      visibleEntries.push({
+        entry,
+        role,
+        segmentIndex
+      });
+    });
+
+    const visibleBySegment = new Map();
+    visibleEntries.forEach((item) => {
+      const segmentItems = visibleBySegment.get(item.segmentIndex) || [];
+      segmentItems.push(item);
+      visibleBySegment.set(item.segmentIndex, segmentItems);
+    });
+
+    const selectedVisibleEntries = new Set();
+    const suppressed = [];
+    const visibleTerminalDebug = [];
+
+    visibleBySegment.forEach((segmentItems, currentSegmentIndex) => {
+      segmentItems.forEach((item, itemIndex) => {
+        const current = item.entry;
+        const currentWrapperId = current?.wrapperNode?.id;
+
+        let keptDescendantWrapperId = null;
+
+        for (let j = itemIndex + 1; j < segmentItems.length; j += 1) {
+          const candidate = segmentItems[j].entry;
+          const candidateWrapperId = candidate?.wrapperNode?.id;
+
+          if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
+            keptDescendantWrapperId = candidateWrapperId;
+          }
+        }
+
+        if (keptDescendantWrapperId) {
+          suppressed.push({
+            entry: current,
+            segmentIndex: currentSegmentIndex,
+            keptDescendantWrapperId
+          });
+          visibleTerminalDebug.push({
+            entry: current,
+            segmentIndex: currentSegmentIndex,
+            terminalVisible: false
+          });
+          return;
+        }
+
+        selectedVisibleEntries.add(current);
+        visibleTerminalDebug.push({
           entry: current,
-          keptDescendantWrapperId
+          segmentIndex: currentSegmentIndex,
+          terminalVisible: true
         });
-        continue;
+      });
+    });
+
+    const selected = [];
+
+    orderedMessages.forEach((entry) => {
+      const role = entry?.message?.author?.role;
+      const isVisibleRole = role === "user" || role === "assistant";
+      if (!isVisibleRole) {
+        selected.push(entry);
+        return;
       }
 
-      selected.push(current);
-    }
+      if (selectedVisibleEntries.has(entry)) {
+        selected.push(entry);
+      }
+    });
 
     return {
       selectedMessages: selected,
-      suppressedIntermediateMessages: suppressed
+      suppressedIntermediateMessages: suppressed,
+      visibleTerminalDebug
     };
   }
 
@@ -630,7 +678,7 @@ document.addEventListener("DOMContentLoaded", () => {
       : { orderedMessages: dedupedMessages, orderedWrapperNodes: [] };
     const terminalSelection = scanResult.shape === "full-thread-node-map"
       ? selectTerminalVisibleMessages(fullThreadOrder.orderedMessages, fullThreadOrder.orderedWrapperNodes)
-      : { selectedMessages: fullThreadOrder.orderedMessages, suppressedIntermediateMessages: [] };
+      : { selectedMessages: fullThreadOrder.orderedMessages, suppressedIntermediateMessages: [], visibleTerminalDebug: [] };
     const exportedMessages = filterExportedNonSystemMessages(terminalSelection.selectedMessages);
 
     return {
@@ -640,7 +688,8 @@ document.addEventListener("DOMContentLoaded", () => {
       dedupedMessages,
       exportedMessages,
       orderedWrapperNodes: fullThreadOrder.orderedWrapperNodes,
-      suppressedIntermediateMessages: terminalSelection.suppressedIntermediateMessages
+      suppressedIntermediateMessages: terminalSelection.suppressedIntermediateMessages,
+      visibleTerminalDebug: terminalSelection.visibleTerminalDebug
     };
   }
 
@@ -729,14 +778,22 @@ document.addEventListener("DOMContentLoaded", () => {
       extraction.suppressedIntermediateMessages.forEach((item) => {
         const entry = item.entry;
         log(
-          `Suppressed: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${entry?.message?.author?.role || "(none)"}, nearest_kept_descendant_wrapper_node_id=${item.keptDescendantWrapperId || "(none)"}, reason=suppressed_intermediate_variant`
+          `Suppressed: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${entry?.message?.author?.role || "(none)"}, segment_index=${item.segmentIndex}, nearest_kept_descendant_wrapper_node_id=${item.keptDescendantWrapperId || "(none)"}, reason=suppressed_intermediate_variant`
+        );
+      });
+
+      extraction.visibleTerminalDebug.slice(0, 15).forEach((item, index) => {
+        const entry = item.entry;
+        const role = entry?.message?.author?.role;
+        log(
+          `Visible ${index + 1}: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${role}, segment_index=${item.segmentIndex}, terminal_visible=${item.terminalVisible}`
         );
       });
 
       messages.slice(0, 10).forEach((entry, index) => {
         const message = entry.message;
         log(
-          `Visible ${index + 1}: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${message?.author?.role}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, terminal_visible=true`
+          `Kept ${index + 1}: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, role=${message?.author?.role}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, terminal_visible=true`
         );
       });
     }
