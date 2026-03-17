@@ -118,6 +118,14 @@ document.addEventListener("DOMContentLoaded", () => {
     return resolved;
   }
 
+  function looksLikeReferenceArray(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return false;
+    }
+
+    return items.every((item) => Number.isInteger(item));
+  }
+
   function resolveKeyedRefObject(obj, root, depth, seen) {
     const entries = Object.keys(obj)
       .map((key) => ({
@@ -172,6 +180,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (Array.isArray(node)) {
       if (node.length === 1 && typeof node[0] === "number" && Number.isInteger(node[0]) && node[0] >= 0) {
         return resolveRefIndex(node[0], root, depth + 1, seen);
+      }
+
+      if (looksLikeReferenceArray(node)) {
+        return node.map((item) => {
+          if (typeof item === "number" && Number.isInteger(item) && item >= 0) {
+            return resolveRefIndex(item, root, depth + 1, seen);
+          }
+          return normalizeSentinel(item);
+        });
       }
 
       return node.map((item) => resolveValue(item, root, depth + 1, seen));
