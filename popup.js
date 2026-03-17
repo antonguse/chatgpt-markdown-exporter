@@ -303,10 +303,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
-  function makeMessageEntry(rootIndex, message) {
+  function makeMessageEntry(rootIndex, message, wrapperNode = null) {
     return {
       rootIndex,
-      message: normalizeMessageCandidate(message)
+      message: normalizeMessageCandidate(message),
+      wrapperNode
     };
   }
 
@@ -354,19 +355,97 @@ document.addEventListener("DOMContentLoaded", () => {
       const resolved = resolveRefIndex(i, root, 0, new Set());
 
       if (isConversationNode(resolved)) {
-        rawCandidates.push({ rootIndex: i, candidate: resolved.message });
+        rawCandidates.push({
+          rootIndex: i,
+          candidate: resolved.message,
+          wrapperNode: {
+            id: typeof resolved.id === "string" ? resolved.id : null,
+            parentId: typeof resolved.parent === "string" ? resolved.parent : null
+          }
+        });
       }
     }
 
     const validMessages = rawCandidates
       .filter((entry) => isResolvedMessage(entry.candidate))
-      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
+      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate, entry.wrapperNode || null));
 
     return {
       shape: "full-thread-node-map",
       rawCandidateCount: rawCandidates.length,
       validMessages
     };
+  }
+
+
+  function orderFullThreadMessagesByGraph(messages) {
+    const messageByWrapperId = new Map();
+
+    messages.forEach((entry) => {
+      const wrapperId = entry?.wrapperNode?.id;
+      if (typeof wrapperId === "string" && wrapperId.length > 0) {
+        messageByWrapperId.set(wrapperId, entry);
+      }
+    });
+
+    if (messageByWrapperId.size === 0) {
+      return sortMessages(messages);
+    }
+
+    const childrenByParent = new Map();
+    messageByWrapperId.forEach((entry, wrapperId) => {
+      const parentId = entry?.wrapperNode?.parentId;
+      if (typeof parentId === "string" && messageByWrapperId.has(parentId)) {
+        const siblings = childrenByParent.get(parentId) || [];
+        siblings.push(entry);
+        childrenByParent.set(parentId, siblings);
+      }
+    });
+
+    const compareEntries = (a, b) => {
+      const ta = typeof a.message.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b.message.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
+      if (ta !== tb) {
+        return ta - tb;
+      }
+      return (a.message.id || "").localeCompare(b.message.id || "");
+    };
+
+    const roots = [];
+    messageByWrapperId.forEach((entry) => {
+      const parentId = entry?.wrapperNode?.parentId;
+      if (!(typeof parentId === "string" && messageByWrapperId.has(parentId))) {
+        roots.push(entry);
+      }
+    });
+
+    roots.sort(compareEntries);
+    childrenByParent.forEach((siblings) => siblings.sort(compareEntries));
+
+    const ordered = [];
+    const visitedWrapperIds = new Set();
+
+    function walk(entry) {
+      const wrapperId = entry?.wrapperNode?.id;
+      if (!wrapperId || visitedWrapperIds.has(wrapperId)) {
+        return;
+      }
+      visitedWrapperIds.add(wrapperId);
+      ordered.push(entry);
+      const children = childrenByParent.get(wrapperId) || [];
+      children.forEach((child) => walk(child));
+    }
+
+    roots.forEach((entry) => walk(entry));
+
+    const leftovers = messages
+      .filter((entry) => {
+        const wrapperId = entry?.wrapperNode?.id;
+        return !(typeof wrapperId === "string" && visitedWrapperIds.has(wrapperId));
+      })
+      .sort(compareEntries);
+
+    return [...ordered, ...leftovers];
   }
 
   function dedupeAndSortMessages(messageEntries) {
@@ -394,7 +473,10 @@ document.addEventListener("DOMContentLoaded", () => {
       : extractFullThreadCandidates(root);
 
     const dedupedMessages = dedupeAndSortMessages(scanResult.validMessages);
-    const exportedMessages = filterExportedNonSystemMessages(dedupedMessages);
+    const orderedMessages = scanResult.shape === "full-thread-node-map"
+      ? orderFullThreadMessagesByGraph(dedupedMessages)
+      : dedupedMessages;
+    const exportedMessages = filterExportedNonSystemMessages(orderedMessages);
 
     return {
       shape: scanResult.shape,
@@ -495,6 +577,18 @@ document.addEventListener("DOMContentLoaded", () => {
         `Message ${index + 1}: root_index=${entry.rootIndex}, id=${message.id}, role=${message?.author?.role}, create_time=${message.create_time}, parts_is_array=${Array.isArray(parts)}, parts_len=${parts.length}, first_part=${firstPartPreview}`
       );
     });
+
+    if (extraction.shape === "full-thread-node-map") {
+      messages.slice(0, 10).forEach((entry, index) => {
+        const message = entry.message;
+        const parts = toPartsArray(message?.content?.parts);
+        const firstPartPreview = extractPartsPreview(parts, 60) || "(no-text-part)";
+
+        log(
+          `Order ${index + 1}: wrapper_node_id=${entry?.wrapperNode?.id || "(none)"}, parent_wrapper_id=${entry?.wrapperNode?.parentId || "(none)"}, message_id=${message.id}, role=${message?.author?.role}, create_time=${message.create_time}, first_part=${firstPartPreview}`
+        );
+      });
+    }
 
     log("Final message list:");
     messages.forEach((entry, index) => {
