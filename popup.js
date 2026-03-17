@@ -352,8 +352,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const rawCandidates = [];
     const wrapperNodes = [];
 
-    for (let i = 0; i < root.length; i += 1) {
-      const resolved = resolveRefIndex(i, root, 0, new Set());
+  function extractSingleResponseCandidates(root, anchorIndex) {
+    const rawCandidates = [];
 
       if (isConversationNode(resolved)) {
         const wrapperNode = {
