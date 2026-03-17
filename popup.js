@@ -9,7 +9,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const status = document.getElementById("status");
 
   const MAX_DEPTH = 60;
-  const MAX_MESSAGES_TO_LOG = 20;
 
   function log(message) {
     console.log(message);
@@ -118,6 +117,10 @@ document.addEventListener("DOMContentLoaded", () => {
     return resolved;
   }
 
+  function looksLikeReferenceArray(items) {
+    return Array.isArray(items) && items.every((item) => Number.isInteger(item));
+  }
+
   function resolveKeyedRefObject(obj, root, depth, seen) {
     const entries = Object.keys(obj)
       .map((key) => ({
@@ -170,8 +173,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (Array.isArray(node)) {
-      if (node.length === 1 && typeof node[0] === "number" && Number.isInteger(node[0]) && node[0] >= 0) {
-        return resolveRefIndex(node[0], root, depth + 1, seen);
+      if (looksLikeReferenceArray(node)) {
+        return node.map((item) => {
+          if (item >= 0) {
+            return resolveRefIndex(item, root, depth + 1, seen);
+          }
+          return normalizeSentinel(item);
+        });
       }
 
       return node.map((item) => resolveValue(item, root, depth + 1, seen));
@@ -220,20 +228,40 @@ document.addEventListener("DOMContentLoaded", () => {
     return parts.join(" | ");
   }
 
-  function extractPartsPreview(message, limit = 120) {
-    const parts = Array.isArray(message?.content?.parts)
-      ? message.content.parts
-      : Array.isArray(message?.parts)
-        ? message.parts
-        : [];
+  function toPartsArray(partsValue) {
+    if (Array.isArray(partsValue)) {
+      return partsValue;
+    }
 
-    const joined = parts
-      .filter((part) => typeof part === "string")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    if (partsValue === null || partsValue === undefined) {
+      return [];
+    }
 
-    return joined.slice(0, limit);
+    return [partsValue];
+  }
+
+  function extractPartsPreview(parts, limit = 80) {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return "";
+    }
+
+    const firstPart = parts.find((part) => typeof part === "string");
+    if (typeof firstPart !== "string") {
+      return "";
+    }
+
+    return firstPart.replace(/\s+/g, " ").trim().slice(0, limit);
+  }
+
+  function normalizeMessageCandidate(node) {
+    const normalizedContent = isPlainObject(node.content)
+      ? { ...node.content, parts: toPartsArray(node.content.parts) }
+      : { parts: [] };
+
+    return {
+      ...node,
+      content: normalizedContent
+    };
   }
 
   function isResolvedMessage(node) {
@@ -241,27 +269,26 @@ document.addEventListener("DOMContentLoaded", () => {
       return false;
     }
 
-    const id = typeof node.id === "string" && node.id.length > 0;
-    const role = Boolean(node?.author?.role || node?.role);
-    const contentType = Boolean(node?.content?.content_type);
-    const parts = Array.isArray(node?.content?.parts) && node.content.parts.length > 0;
-    const createTime = typeof node.create_time === "number";
+    const hasId = typeof node.id === "string" && node.id.length > 0;
+    const hasAuthorRole = typeof node?.author?.role === "string" && node.author.role.length > 0;
+    const hasCreateTime = typeof node.create_time === "number";
+    const hasPartsField = node?.content && Object.prototype.hasOwnProperty.call(node.content, "parts");
 
-    return id && role && contentType && parts && createTime;
+    return hasId && hasAuthorRole && hasCreateTime && hasPartsField;
   }
 
   function sortMessages(messages) {
     const sorted = [...messages];
     sorted.sort((a, b) => {
-      const ta = typeof a.create_time === "number" ? a.create_time : Number.POSITIVE_INFINITY;
-      const tb = typeof b.create_time === "number" ? b.create_time : Number.POSITIVE_INFINITY;
+      const ta = typeof a.message.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b.message.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
 
       if (ta !== tb) {
         return ta - tb;
       }
 
-      const ia = typeof a.id === "string" ? a.id : "";
-      const ib = typeof b.id === "string" ? b.id : "";
+      const ia = typeof a.message.id === "string" ? a.message.id : "";
+      const ib = typeof b.message.id === "string" ? b.message.id : "";
       return ia.localeCompare(ib);
     });
     return sorted;
@@ -276,51 +303,401 @@ document.addEventListener("DOMContentLoaded", () => {
     return -1;
   }
 
-  function findAllMessageCandidates(root) {
-    const found = [];
+  function makeMessageEntry(rootIndex, message, wrapperNode = null) {
+    return {
+      rootIndex,
+      message: normalizeMessageCandidate(message),
+      wrapperNode
+    };
+  }
+
+  function extractSingleResponseCandidates(root, anchorIndex) {
+    const rawCandidates = [];
+
+    const nextIndex = anchorIndex + 1;
+    if (nextIndex < root.length) {
+      const resolvedNext = resolveRefIndex(nextIndex, root, 0, new Set());
+
+      if (Array.isArray(resolvedNext)) {
+        resolvedNext.forEach((item) => rawCandidates.push({ rootIndex: nextIndex, candidate: item }));
+      } else {
+        rawCandidates.push({ rootIndex: nextIndex, candidate: resolvedNext });
+      }
+    }
+
+    const validMessages = rawCandidates
+      .filter((entry) => isResolvedMessage(entry.candidate))
+      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate));
+
+    return {
+      shape: "single-response-direct-message",
+      rawCandidateCount: rawCandidates.length,
+      validMessages
+    };
+  }
+
+  function isConversationNode(node) {
+    if (!isPlainObject(node)) {
+      return false;
+    }
+
+    if (!isPlainObject(node.message)) {
+      return false;
+    }
+
+    return Object.prototype.hasOwnProperty.call(node, "parent") || Array.isArray(node.children);
+  }
+
+  function extractFullThreadCandidates(root) {
+    const rawCandidates = [];
+    const wrapperNodes = [];
 
     for (let i = 0; i < root.length; i += 1) {
       const resolved = resolveRefIndex(i, root, 0, new Set());
 
-      if (isResolvedMessage(resolved)) {
-        found.push(resolved);
-      }
+      if (isConversationNode(resolved)) {
+        const wrapperNode = {
+          id: typeof resolved.id === "string" ? resolved.id : null,
+          parentId: typeof resolved.parent === "string" ? resolved.parent : null,
+          childrenIds: Array.isArray(resolved.children)
+            ? resolved.children.filter((child) => typeof child === "string")
+            : [],
+          message: resolved.message
+        };
 
-      if (Array.isArray(resolved)) {
-        resolved.forEach((item) => {
-          if (isResolvedMessage(item)) {
-            found.push(item);
-          }
-        });
-      }
+        wrapperNodes.push(wrapperNode);
 
-      if (isPlainObject(resolved)) {
-        Object.values(resolved).forEach((value) => {
-          if (isResolvedMessage(value)) {
-            found.push(value);
-          }
-          if (Array.isArray(value)) {
-            value.forEach((item) => {
-              if (isResolvedMessage(item)) {
-                found.push(item);
-              }
-            });
+        rawCandidates.push({
+          rootIndex: i,
+          candidate: resolved.message,
+          wrapperNode: {
+            id: wrapperNode.id,
+            parentId: wrapperNode.parentId
           }
         });
       }
     }
 
+    const validMessages = rawCandidates
+      .filter((entry) => isResolvedMessage(entry.candidate))
+      .map((entry) => makeMessageEntry(entry.rootIndex, entry.candidate, entry.wrapperNode || null));
+
+    return {
+      shape: "full-thread-node-map",
+      rawCandidateCount: rawCandidates.length,
+      validMessages,
+      wrapperNodes
+    };
+  }
+
+
+  function orderFullThreadMessagesByGraph(messages, wrapperNodes = []) {
+    const messageByWrapperId = new Map();
+
+    messages.forEach((entry) => {
+      const wrapperId = entry?.wrapperNode?.id;
+      if (typeof wrapperId === "string" && wrapperId.length > 0) {
+        messageByWrapperId.set(wrapperId, entry);
+      }
+    });
+
+    if (wrapperNodes.length === 0 || messageByWrapperId.size === 0) {
+      return {
+        orderedMessages: sortMessages(messages),
+        orderedWrapperNodes: []
+      };
+    }
+
+    const wrapperById = new Map();
+    wrapperNodes.forEach((node) => {
+      if (typeof node?.id === "string" && node.id.length > 0) {
+        wrapperById.set(node.id, node);
+      }
+    });
+
+    const childrenByParent = new Map();
+
+    wrapperById.forEach((node) => {
+      const parentId = node?.parentId;
+      if (typeof parentId === "string" && wrapperById.has(parentId)) {
+        const siblings = childrenByParent.get(parentId) || [];
+        siblings.push(node);
+        childrenByParent.set(parentId, siblings);
+      }
+    });
+
+    wrapperById.forEach((node) => {
+      node.childrenIds.forEach((childId) => {
+        if (wrapperById.has(childId)) {
+          const siblings = childrenByParent.get(node.id) || [];
+          if (!siblings.some((sibling) => sibling.id === childId)) {
+            siblings.push(wrapperById.get(childId));
+            childrenByParent.set(node.id, siblings);
+          }
+        }
+      });
+    });
+
+    const compareNodes = (a, b) => {
+      const ta = typeof a?.message?.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b?.message?.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
+      if (ta !== tb) {
+        return ta - tb;
+      }
+      const ia = typeof a?.message?.id === "string" ? a.message.id : "";
+      const ib = typeof b?.message?.id === "string" ? b.message.id : "";
+      if (ia !== ib) {
+        return ia.localeCompare(ib);
+      }
+      return (a.id || "").localeCompare(b.id || "");
+    };
+
+    const compareEntries = (a, b) => {
+      const ta = typeof a.message.create_time === "number" ? a.message.create_time : Number.POSITIVE_INFINITY;
+      const tb = typeof b.message.create_time === "number" ? b.message.create_time : Number.POSITIVE_INFINITY;
+      if (ta !== tb) {
+        return ta - tb;
+      }
+      return (a.message.id || "").localeCompare(b.message.id || "");
+    };
+
+    const roots = [];
+    wrapperById.forEach((node) => {
+      const parentId = node?.parentId;
+      if (!(typeof parentId === "string" && wrapperById.has(parentId))) {
+        roots.push(node);
+      }
+    });
+
+    roots.sort(compareNodes);
+    childrenByParent.forEach((siblings) => siblings.sort(compareNodes));
+
+    const orderedWrapperNodes = [];
+    const orderedMessages = [];
+    const visitedWrapperIds = new Set();
+
+    function walk(node) {
+      const wrapperId = node?.id;
+      if (!wrapperId || visitedWrapperIds.has(wrapperId)) {
+        return;
+      }
+      visitedWrapperIds.add(wrapperId);
+      orderedWrapperNodes.push(node);
+
+      const messageEntry = messageByWrapperId.get(wrapperId);
+      if (messageEntry) {
+        orderedMessages.push(messageEntry);
+      }
+
+      const children = childrenByParent.get(wrapperId) || [];
+      children.forEach((childNode) => walk(childNode));
+    }
+
+    roots.forEach((rootNode) => walk(rootNode));
+
+    const leftoverWrapperNodes = [];
+    wrapperById.forEach((node) => {
+      if (!visitedWrapperIds.has(node.id)) {
+        leftoverWrapperNodes.push(node);
+      }
+    });
+    leftoverWrapperNodes.sort(compareNodes).forEach((node) => walk(node));
+
+    const leftoverMessages = messages
+      .filter((entry) => {
+        const wrapperId = entry?.wrapperNode?.id;
+        return !(typeof wrapperId === "string" && orderedMessages.some((orderedEntry) => orderedEntry?.wrapperNode?.id === wrapperId));
+      })
+      .sort(compareEntries);
+
+    return {
+      orderedMessages: [...orderedMessages, ...leftoverMessages],
+      orderedWrapperNodes
+    };
+  }
+
+  function dedupeAndSortMessages(messageEntries) {
     const deduped = [];
     const seenIds = new Set();
 
-    found.forEach((message) => {
-      if (!seenIds.has(message.id)) {
-        seenIds.add(message.id);
-        deduped.push(message);
+    messageEntries.forEach((entry) => {
+      const messageId = entry.message.id;
+      if (!seenIds.has(messageId)) {
+        seenIds.add(messageId);
+        deduped.push(entry);
       }
     });
 
     return sortMessages(deduped);
+  }
+
+  function filterExportedNonSystemMessages(messages) {
+    return messages.filter((entry) => entry?.message?.author?.role !== "system");
+  }
+
+
+  function isDescendantWrapper(wrapperId, possibleAncestorId, parentByWrapperId) {
+    if (typeof wrapperId !== "string" || typeof possibleAncestorId !== "string") {
+      return false;
+    }
+
+    let current = parentByWrapperId.get(wrapperId);
+    const guard = new Set();
+
+    while (typeof current === "string" && !guard.has(current)) {
+      if (current === possibleAncestorId) {
+        return true;
+      }
+      guard.add(current);
+      current = parentByWrapperId.get(current);
+    }
+
+    return false;
+  }
+
+  function selectTerminalVisibleMessages(orderedMessages, orderedWrapperNodes = []) {
+    const parentByWrapperId = new Map();
+
+    orderedWrapperNodes.forEach((node) => {
+      if (typeof node?.id === "string") {
+        parentByWrapperId.set(node.id, typeof node?.parentId === "string" ? node.parentId : null);
+      }
+    });
+
+    orderedMessages.forEach((entry) => {
+      const wrapperId = entry?.wrapperNode?.id;
+      const parentId = entry?.wrapperNode?.parentId;
+      if (typeof wrapperId === "string" && !parentByWrapperId.has(wrapperId)) {
+        parentByWrapperId.set(wrapperId, typeof parentId === "string" ? parentId : null);
+      }
+    });
+
+    const wrapperVisibleEntries = [];
+    let segmentIndex = -1;
+    let previousVisibleRole = null;
+
+    orderedWrapperNodes.forEach((node) => {
+      const role = node?.message?.author?.role;
+      const isVisibleRole = role === "user" || role === "assistant";
+      if (!isVisibleRole) {
+        return;
+      }
+
+      if (role !== previousVisibleRole) {
+        segmentIndex += 1;
+        previousVisibleRole = role;
+      }
+
+      wrapperVisibleEntries.push({
+        wrapperNode: node,
+        role,
+        segmentIndex
+      });
+    });
+
+    const visibleBySegment = new Map();
+    wrapperVisibleEntries.forEach((item) => {
+      const segmentItems = visibleBySegment.get(item.segmentIndex) || [];
+      segmentItems.push(item);
+      visibleBySegment.set(item.segmentIndex, segmentItems);
+    });
+
+    const keptVisibleWrapperIds = new Set();
+    const suppressed = [];
+
+    visibleBySegment.forEach((segmentItems, currentSegmentIndex) => {
+      segmentItems.forEach((item, itemIndex) => {
+        const currentWrapperId = item?.wrapperNode?.id;
+
+        let keptDescendantWrapperId = null;
+
+        for (let j = itemIndex + 1; j < segmentItems.length; j += 1) {
+          const candidateWrapperId = segmentItems[j]?.wrapperNode?.id;
+
+          if (isDescendantWrapper(candidateWrapperId, currentWrapperId, parentByWrapperId)) {
+            keptDescendantWrapperId = candidateWrapperId;
+          }
+        }
+
+        if (keptDescendantWrapperId) {
+          suppressed.push({
+            wrapperNode: item.wrapperNode,
+            segmentIndex: currentSegmentIndex,
+            keptDescendantWrapperId
+          });
+          return;
+        }
+
+        if (typeof currentWrapperId === "string") {
+          keptVisibleWrapperIds.add(currentWrapperId);
+        }
+      });
+    });
+
+    const selected = [];
+
+    orderedMessages.forEach((entry) => {
+      const role = entry?.message?.author?.role;
+      const isVisibleRole = role === "user" || role === "assistant";
+      if (!isVisibleRole) {
+        selected.push(entry);
+        return;
+      }
+
+      const wrapperId = entry?.wrapperNode?.id;
+      if (typeof wrapperId === "string" && keptVisibleWrapperIds.has(wrapperId)) {
+        selected.push(entry);
+      }
+    });
+
+    const keptVisibleDebug = [];
+    wrapperVisibleEntries.forEach((item) => {
+      const wrapperId = item?.wrapperNode?.id;
+      keptVisibleDebug.push({
+        wrapperNode: item.wrapperNode,
+        segmentIndex: item.segmentIndex,
+        terminalVisible: typeof wrapperId === "string" && keptVisibleWrapperIds.has(wrapperId)
+      });
+    });
+
+    return {
+      selectedMessages: selected,
+      suppressedIntermediateMessages: suppressed,
+      wrapperDerivedVisibleRoleNodes: wrapperVisibleEntries,
+      keptVisibleDebug
+    };
+  }
+
+  function extractMessagesByPayloadShape(root, anchorIndex) {
+    const scanResult = anchorIndex !== -1
+      ? extractSingleResponseCandidates(root, anchorIndex)
+      : extractFullThreadCandidates(root);
+
+    const dedupedMessages = dedupeAndSortMessages(scanResult.validMessages);
+    const fullThreadOrder = scanResult.shape === "full-thread-node-map"
+      ? orderFullThreadMessagesByGraph(dedupedMessages, scanResult.wrapperNodes || [])
+      : { orderedMessages: dedupedMessages, orderedWrapperNodes: [] };
+    const terminalSelection = scanResult.shape === "full-thread-node-map"
+      ? selectTerminalVisibleMessages(fullThreadOrder.orderedMessages, fullThreadOrder.orderedWrapperNodes)
+      : {
+        selectedMessages: fullThreadOrder.orderedMessages,
+        suppressedIntermediateMessages: [],
+        wrapperDerivedVisibleRoleNodes: [],
+        keptVisibleDebug: []
+      };
+    const exportedMessages = filterExportedNonSystemMessages(terminalSelection.selectedMessages);
+
+    return {
+      shape: scanResult.shape,
+      rawCandidateCount: scanResult.rawCandidateCount,
+      validMessageCount: scanResult.validMessages.length,
+      dedupedMessages,
+      exportedMessages,
+      orderedWrapperNodes: fullThreadOrder.orderedWrapperNodes,
+      suppressedIntermediateMessages: terminalSelection.suppressedIntermediateMessages,
+      wrapperDerivedVisibleRoleNodes: terminalSelection.wrapperDerivedVisibleRoleNodes,
+      keptVisibleDebug: terminalSelection.keptVisibleDebug
+    };
   }
 
   function logRootDebug(root) {
@@ -396,22 +773,89 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logRootDebug(root);
 
-    const messages = findAllMessageCandidates(root);
-    log(`Resolved message count: ${messages.length}`);
+    const extraction = extractMessagesByPayloadShape(root, anchor);
+    const messages = extraction.exportedMessages;
 
-    messages.slice(0, MAX_MESSAGES_TO_LOG).forEach((message, index) => {
-      const role = message?.author?.role || message?.role || "(no-role)";
-      const contentType = message?.content?.content_type || "(no-content_type)";
-      const parts = extractPartsPreview(message, 120) || "(no-parts)";
+    log(`payload shape classification: ${extraction.shape}`);
+    log(`raw candidates found: ${extraction.rawCandidateCount}`);
+    log(`valid messages found: ${extraction.validMessageCount}`);
+    log(`exported non-system messages: ${messages.length}`);
+
+    if (extraction.shape === "full-thread-node-map") {
+      extraction.wrapperDerivedVisibleRoleNodes.slice(0, 20).forEach((item, index) => {
+        const node = item.wrapperNode;
+        const createTime = typeof node?.message?.create_time === "number" ? node.message.create_time : "(none)";
+        log(
+          `Wrapper-visible ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${item.role}, parent_wrapper_id=${node?.parentId || "(none)"}, create_time=${createTime}`
+        );
+      });
+
+      extraction.suppressedIntermediateMessages.forEach((item) => {
+        const node = item.wrapperNode;
+        log(
+          `Suppressed: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, segment_index=${item.segmentIndex}, nearest_kept_descendant_wrapper_node_id=${item.keptDescendantWrapperId || "(none)"}, reason=suppressed_intermediate_variant`
+        );
+      });
+
+      extraction.keptVisibleDebug.slice(0, 15).forEach((item, index) => {
+        const node = item.wrapperNode;
+        log(
+          `Visible-role with flags ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, terminal_visible=${item.terminalVisible}`
+        );
+      });
+
+      extraction.keptVisibleDebug
+        .filter((item) => item.terminalVisible)
+        .slice(0, 10)
+        .forEach((item, index) => {
+          const node = item.wrapperNode;
+          log(
+            `Terminal-visible kept ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, role=${node?.message?.author?.role || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, terminal_visible=true`
+          );
+        });
+    }
+
+    if (extraction.shape === "full-thread-node-map") {
+      extraction.orderedWrapperNodes.slice(0, 15).forEach((node, index) => {
+        const role = node?.message?.author?.role || "(none)";
+        const messageId = node?.message?.id || "(none)";
+        const createTime = typeof node?.message?.create_time === "number" ? node.message.create_time : "(none)";
+        log(
+          `Ordered wrapper ${index + 1}: wrapper_node_id=${node?.id || "(none)"}, parent_wrapper_id=${node?.parentId || "(none)"}, role=${role}, message_id=${messageId}, create_time=${createTime}`
+        );
+      });
+    }
+
+    messages.slice(0, 10).forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      const firstPartPreview = extractPartsPreview(parts, 80) || "(no-text-part)";
 
       log(
-        `Message ${index + 1}: id=${message.id}, role=${role}, create_time=${message.create_time}, content_type=${contentType}, parts=${parts}`
+        `Message ${index + 1}: root_index=${entry.rootIndex}, id=${message.id}, role=${message?.author?.role}, create_time=${message.create_time}, parts_is_array=${Array.isArray(parts)}, parts_len=${parts.length}, first_part=${firstPartPreview}`
       );
     });
 
-    if (messages.length > MAX_MESSAGES_TO_LOG) {
-      log(`...truncated ${messages.length - MAX_MESSAGES_TO_LOG} additional messages`);
+    if (extraction.shape === "full-thread-node-map") {
+      messages.slice(0, 15).forEach((entry, index) => {
+        const message = entry.message;
+        const parts = toPartsArray(message?.content?.parts);
+        const firstPartPreview = extractPartsPreview(parts, 60) || "(no-text-part)";
+
+        log(
+          `Exported ${index + 1}: role=${message?.author?.role}, message_id=${message.id}, create_time=${message.create_time}, first_part=${firstPartPreview}`
+        );
+      });
     }
+
+    log("Final message list:");
+    messages.forEach((entry, index) => {
+      const message = entry.message;
+      const parts = toPartsArray(message?.content?.parts);
+      log(
+        `#${index + 1} id=${message.id} | role=${message?.author?.role} | create_time=${message.create_time} | parts=${JSON.stringify(parts)}`
+      );
+    });
   }
 
   log("Extension started");
