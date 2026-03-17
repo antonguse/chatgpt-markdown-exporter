@@ -49,3 +49,7 @@ main {
   resize: vertical;
   white-space: pre-wrap;
 }
+
+#markdownMode {
+  margin-left: 4px;
+}

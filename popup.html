@@ -12,6 +12,12 @@
       <div class="controls">
         <button id="convertButton" type="button">Convert</button>
         <label><input id="debugToggle" type="checkbox" /> Debug</label>
+        <label>Mode
+          <select id="markdownMode">
+            <option value="compact" selected>compact</option>
+            <option value="chat">chat</option>
+          </select>
+        </label>
       </div>
       <div id="status">Status: idle</div>
       <textarea id="markdownOutput" readonly></textarea>

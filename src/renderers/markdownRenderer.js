@@ -5,6 +5,12 @@ function normalizeRoleHeading(role) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
+function chatRoleHeading(role) {
+  if (role === 'user') return '👤 User';
+  if (role === 'assistant') return '🤖 Assistant';
+  return normalizeRoleHeading(role);
+}
+
 function stringifyUnknownPart(part) {
   if (typeof part === 'string') return part;
   try {
@@ -41,26 +47,14 @@ function toContentBlock(part) {
   const language = typeof part?.language === 'string' && part.language.trim() ? part.language.trim() : null;
 
   if (kind === 'code') {
-    return {
-      kind,
-      language,
-      text: extractCodeText(part)
-    };
+    return { kind, language, text: extractCodeText(part) };
   }
 
   if (kind === 'plain_text') {
-    return {
-      kind,
-      language: null,
-      text: extractCodeText(part)
-    };
+    return { kind, language: null, text: extractCodeText(part) };
   }
 
-  return {
-    kind: 'narrative',
-    language: null,
-    text: stringifyUnknownPart(part)
-  };
+  return { kind: 'narrative', language: null, text: stringifyUnknownPart(part) };
 }
 
 export function buildMessageContentBlocks(parts) {
@@ -81,20 +75,48 @@ function renderBlock(block) {
   return block.text || '';
 }
 
-export function renderConversationAsMarkdown(conversation, options = {}) {
+function renderCompact(messages) {
   const output = [];
-
-  if (options.title) output.push(`# ${options.title}`);
-  if (options.sourceUrl) output.push(`Source: ${options.sourceUrl}`);
-
-  conversation.messages.forEach((message) => {
+  messages.forEach((message) => {
     output.push(`## ${normalizeRoleHeading(message.role)}`);
+    const contentBlocks = buildMessageContentBlocks(message.parts);
+    contentBlocks.forEach((block) => {
+      output.push(renderBlock(block));
+    });
+  });
+  return output;
+}
+
+function renderChat(messages) {
+  const output = [];
+  messages.forEach((message, index) => {
+    if (index > 0) {
+      output.push('---');
+    }
+    output.push(`### ${chatRoleHeading(message.role)}`);
 
     const contentBlocks = buildMessageContentBlocks(message.parts);
     contentBlocks.forEach((block) => {
       output.push(renderBlock(block));
     });
   });
+  return output;
+}
+
+export function renderMarkdown(messages, options = {}) {
+  const mode = options.mode === 'chat' ? 'chat' : 'compact';
+  const output = [];
+
+  if (options.title) output.push(`# ${options.title}`);
+  if (options.sourceUrl) output.push(`Source: ${options.sourceUrl}`);
+
+  const body = mode === 'chat' ? renderChat(messages) : renderCompact(messages);
+  output.push(...body);
 
   return output.join('\n\n').trim();
+}
+
+export function renderConversationAsMarkdown(conversation, options = {}) {
+  const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  return renderMarkdown(messages, options);
 }

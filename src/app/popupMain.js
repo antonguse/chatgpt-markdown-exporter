@@ -37,6 +37,7 @@ export function initPopupApp() {
   const urlInput = document.getElementById('urlInput');
   const convertButton = document.getElementById('convertButton');
   const debugToggle = document.getElementById('debugToggle');
+  const markdownMode = document.getElementById('markdownMode');
   const markdownOutput = document.getElementById('markdownOutput');
   const debugOutput = document.getElementById('debugOutput');
   const status = document.getElementById('status');
@@ -93,7 +94,8 @@ export function initPopupApp() {
 
       markdownOutput.value = renderConversationAsMarkdown(conversation, {
         title: getDocumentTitleFromHtml(source.html),
-        sourceUrl: source.url
+        sourceUrl: source.url,
+        mode: markdownMode?.value || 'compact'
       });
 
       setOutputMode(debugToggle.checked);
