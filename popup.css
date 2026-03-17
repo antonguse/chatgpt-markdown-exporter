@@ -17,7 +17,8 @@ main {
 }
 
 #urlInput,
-#loadButton,
+#convertButton,
+#markdownOutput,
 #debugOutput {
   font: inherit;
 }
@@ -26,7 +27,13 @@ main {
   padding: 8px;
 }
 
-#loadButton {
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#convertButton {
   padding: 8px;
   cursor: pointer;
 }
@@ -35,9 +42,14 @@ main {
   font-size: 13px;
 }
 
+#markdownOutput,
 #debugOutput {
   width: 100%;
   height: 380px;
   resize: vertical;
-  white-space: pre;
+  white-space: pre-wrap;
+}
+
+#markdownMode {
+  margin-left: 4px;
 }
