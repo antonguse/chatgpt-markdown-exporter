@@ -33,6 +33,41 @@ function makeFirstMessageBlockDebugLines(conversation) {
   return lines;
 }
 
+function isSupportedUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && parsed.hostname === 'chatgpt.com';
+  } catch {
+    return false;
+  }
+}
+
+async function tryAutofillUrlFromClipboard(urlInput, setStatus) {
+  console.log('clipboard: read attempted');
+
+  try {
+    const raw = await navigator.clipboard.readText();
+    console.log('clipboard: read succeeded');
+
+    const text = raw.trim();
+    const accepted = isSupportedUrl(text);
+    console.log(`clipboard: URL ${accepted ? 'accepted' : 'rejected'}`);
+
+    if (!accepted) {
+      console.log('clipboard: input autofilled no');
+      return;
+    }
+
+    urlInput.value = text;
+    setStatus('Clipboard URL detected');
+    console.log('clipboard: input autofilled yes');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`clipboard: read failed (${message})`);
+    console.log('clipboard: input autofilled no');
+  }
+}
+
 export function initPopupApp() {
   const urlInput = document.getElementById('urlInput');
   const convertButton = document.getElementById('convertButton');
@@ -65,6 +100,7 @@ export function initPopupApp() {
 
   setStatus('idle');
   setOutputMode(false);
+  void tryAutofillUrlFromClipboard(urlInput, setStatus);
 
   debugToggle.addEventListener('change', () => {
     setOutputMode(debugToggle.checked);
