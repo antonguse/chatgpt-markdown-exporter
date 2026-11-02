@@ -1,3 +1,4 @@
+import { parseSupportedChatGptUrl } from './supportedUrl.js';
 import { getStreamEnqueueScripts, extractEnqueuePayload, decodeEscapedPayload } from './web/pageSource.js';
 import { extractChatGptConversation, findMessageAnchorIndex, compactResolvedNode, logRootDebugLines } from './extractors/conversationExtractor.js';
 import { createDebugData } from '../../debug/debugCollector.js';
@@ -6,7 +7,12 @@ export function createChatGptProvider() {
   return {
     providerId: 'chatgpt',
     canHandle(source) {
-      return /^https:\/\/chatgpt\.com\//.test(source.url);
+      try {
+        parseSupportedChatGptUrl(source.url);
+        return true;
+      } catch {
+        return false;
+      }
     },
     extractFromSource(source) {
       const prelude = ['--- React Router enqueue extraction pass (script #7 focus) ---'];
@@ -80,3 +86,4 @@ export function createChatGptProvider() {
     }
   };
 }
+
