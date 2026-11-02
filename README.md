@@ -120,3 +120,65 @@ Use this prompt for Claude/Codex...
 ## License
 
 MIT License
+
+
+
+## Clipboard and URL handling
+
+Opening the popup never reads the clipboard. Paste a link into the field with
+Ctrl+V / Cmd+V or the native Paste menu, then click Convert. Copy writes the
+visible output only when clicked; clipboard failures are shown in the status.
+No clipboard permissions are requested. The existing ChatGPT host permission
+is retained for fetching shared pages.
+
+Accepted links are HTTPS URLs on exactly `chatgpt.com`, with no credentials or
+non-default port, and a single ID under `/s/` or `/share/`. Ordinary `/c/` links
+are not supported by this shared-page loader. Query strings and fragments are
+preserved. All HTTP redirects are rejected, including same-origin redirects;
+use the final supported shared URL instead. This intentionally avoids making a
+request to an unchecked redirect destination. Whether current ChatGPT shared
+links need redirects must be checked in the browser smoke test below.
+
+HTTP failures and pages with no extracted messages are errors, not successful
+empty exports. Starting a conversion clears previous output, and Convert/Copy
+are disabled during the request.
+
+## Automated regression tests
+
+Use Node.js 20 or later, with no dependencies to install:
+
+```sh
+npm test
+```
+
+Tests cover popup initialization without clipboard access, preserved manual
+input, Copy errors, URL validation before requests, duplicate conversions,
+HTTP failures, redirect policy, response URL validation, missing conversation
+data, and manifest permissions. These are Node tests with mocked browser APIs;
+they do not establish browser permission or live ChatGPT compatibility.
+
+## Browser smoke tests (required before release)
+
+Run in clean Firefox and Chromium profiles; record browser version, OS, and
+results. In Firefox load `manifest.json` through `about:debugging`; in Chromium
+use `chrome://extensions` → Developer mode → Load unpacked.
+
+- Open the popup with arbitrary private text in the clipboard: no read, paste
+  prompt, automatic field change, or clipboard content in console logs.
+- Paste through keyboard and native context menu; verify the input is preserved
+  after waiting, changing focus, and toggling Debug.
+- Convert a real `/s/<id>` link and a real `/share/<id>` link. Record any redirect
+  failure explicitly; confirm the final supported direct URL exports expected
+  messages. Do not treat merely passing URL validation as successful extraction.
+- Try HTTP, lookalike hosts, credentials, non-default port, `/c/` and invalid paths:
+  no network request. Check Network with popup inspection tools.
+- With ChatGPT site access granted and withheld/revoked, verify success or a
+  visible fetch error; never a false success. Also try offline mode.
+- During a slow request, Convert and Copy stay disabled. After failure they are
+  enabled, old output is absent, and the error remains visible.
+- Copy Markdown and Debug output by clicking Copy, then paste into an editor.
+  Verify failures remain visible if clipboard write is blocked or focus is lost.
+- Close and reopen the popup during a request: new popup starts idle with no
+  stale result or clipboard access. Repeat basic paste and Copy in both browsers.
+
+Browser smoke tests have not been executed as part of the Node test suite.
