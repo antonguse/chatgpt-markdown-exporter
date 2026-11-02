@@ -1,3 +1,4 @@
+import { parseSupportedChatGptUrl } from '../providers/chatgpt/supportedUrl.js';
 import { createFirefoxPopupHost } from '../platform/browser/firefox/firefoxPopupHost.js';
 import { createChatGptProvider } from '../providers/chatgpt/chatgptProvider.js';
 import { renderConversationAsDebugText } from '../renderers/debugTextRenderer.js';
@@ -33,41 +34,6 @@ function makeFirstMessageBlockDebugLines(conversation) {
   return lines;
 }
 
-function isSupportedUrl(value) {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'https:' && parsed.hostname === 'chatgpt.com';
-  } catch {
-    return false;
-  }
-}
-
-async function tryAutofillUrlFromClipboard(urlInput, setStatus) {
-  console.log('clipboard: read attempted');
-
-  try {
-    const raw = await navigator.clipboard.readText();
-    console.log('clipboard: read succeeded');
-
-    const text = raw.trim();
-    const accepted = isSupportedUrl(text);
-    console.log(`clipboard: URL ${accepted ? 'accepted' : 'rejected'}`);
-
-    if (!accepted) {
-      console.log('clipboard: input autofilled no');
-      return;
-    }
-
-    urlInput.value = text;
-    setStatus('Clipboard URL detected');
-    console.log('clipboard: input autofilled yes');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`clipboard: read failed (${message})`);
-    console.log('clipboard: input autofilled no');
-  }
-}
-
 export function initPopupApp() {
   const urlInput = document.getElementById('urlInput');
   const convertButton = document.getElementById('convertButton');
@@ -100,7 +66,6 @@ export function initPopupApp() {
 
   setStatus('idle');
   setOutputMode(false);
-  void tryAutofillUrlFromClipboard(urlInput, setStatus);
 
   debugToggle.addEventListener('change', () => {
     setOutputMode(debugToggle.checked);
@@ -123,12 +88,13 @@ export function initPopupApp() {
   });
 
   convertButton.addEventListener('click', async () => {
+    if (convertButton.disabled) return;
     try {
-      const url = urlInput.value.trim();
-      if (!url) {
-        setStatus('error: URL is required');
-        return;
-      }
+      markdownOutput.value = '';
+      debugOutput.value = '';
+      const url = parseSupportedChatGptUrl(urlInput.value).href;
+      convertButton.disabled = true;
+      copyButton.disabled = true;
 
       setStatus('running');
 
@@ -138,7 +104,10 @@ export function initPopupApp() {
       }
 
       const result = provider.extractFromSource({ url: source.url, html: source.html });
-      const conversation = result.conversation || { messages: [] };
+      const conversation = result.conversation;
+      if (!Array.isArray(conversation?.messages) || conversation.messages.length === 0) {
+        throw new Error('No conversation messages extracted');
+      }
 
       const blockDebugLines = makeFirstMessageBlockDebugLines(conversation);
       const existingPrelude = Array.isArray(result.debug?.prelude) ? result.debug.prelude : [];
@@ -161,6 +130,10 @@ export function initPopupApp() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`error: ${message}`);
+    } finally {
+      convertButton.disabled = false;
+      copyButton.disabled = false;
     }
   });
 }
+
